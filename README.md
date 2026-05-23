@@ -22,6 +22,12 @@ pip install -r requirements.txt
 python lightsaber_mvp.py
 ```
 
+可選參數：
+
+```bash
+python lightsaber_mvp.py --camera-index 1 --no-mirror
+```
+
 ## 操作說明
 
 - 握拳持續 0.5 秒：點燃光劍

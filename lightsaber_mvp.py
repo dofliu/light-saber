@@ -28,6 +28,7 @@ Keys:
     ESC / Q          -> quit
 """
 
+import argparse
 import math
 import os
 import time
@@ -738,12 +739,28 @@ def update_tip_speed(slot, tip_pos, now):
 
 
 # -------- Main --------
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Lightsaber MVP with MediaPipe hand tracking.")
+    parser.add_argument(
+        "--camera-index",
+        type=int,
+        default=0,
+        help="Webcam index used by OpenCV VideoCapture (default: 0).")
+    parser.add_argument(
+        "--no-mirror",
+        action="store_true",
+        help="Disable horizontal mirroring on preview.")
+    return parser.parse_args()
+
+
 def main():
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    args = parse_args()
+    cap = cv2.VideoCapture(args.camera_index, cv2.CAP_DSHOW)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAP_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAP_HEIGHT)
     if not cap.isOpened():
-        cap = cv2.VideoCapture(0)
+        cap = cv2.VideoCapture(args.camera_index)
     if not cap.isOpened():
         raise RuntimeError("Cannot open webcam")
 
@@ -768,7 +785,7 @@ def main():
     classifier = FistClassifier()
     audio = Audio()
 
-    mirror = True
+    mirror = not args.no_mirror
     debug = False
     fullscreen = False
     blade_len_mult = BLADE_LEN_MULT
