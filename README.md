@@ -43,6 +43,7 @@ python lightsaber_mvp.py --camera-index 1 --no-mirror
 - `lightsaber_mvp.py`：主程式
 - `requirements.txt`：Python 依賴
 - `.gitignore`：忽略本機與暫存檔
+- `tests/`：自動化測試
 - `task_progress.md`：每次單一任務推進記錄
 
 ## 已知限制

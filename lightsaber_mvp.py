@@ -739,7 +739,7 @@ def update_tip_speed(slot, tip_pos, now):
 
 
 # -------- Main --------
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Lightsaber MVP with MediaPipe hand tracking.")
     parser.add_argument(
@@ -751,7 +751,7 @@ def parse_args():
         "--no-mirror",
         action="store_true",
         help="Disable horizontal mirroring on preview.")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main():
