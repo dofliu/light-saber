@@ -25,7 +25,7 @@ python lightsaber_mvp.py
 可選參數：
 
 ```bash
-python lightsaber_mvp.py --camera-index 1 --no-mirror
+python lightsaber_mvp.py --camera-index 1 --no-mirror --max-hands 2
 ```
 
 ## 操作說明

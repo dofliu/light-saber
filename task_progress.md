@@ -13,9 +13,15 @@
 - 補上 CLI 參數 smoke test，驗證預設 camera/mirror 行為與自訂參數解析
 - 修正 `README.md` 與 `task_progress.md` 的繁中內容，避免文件在後續維護中不可讀
 
+## 2026-06-08
+
+### 已完成
+- 增加 CLI 參數：`--max-hands`，讓展示現場可限制手部追蹤數量
+- 補上 `--max-hands` 測試，涵蓋預設值、自訂值與非法值
+
 ### 目前進行中
-- 無
+- 等待 #1 合併；本次 `--max-hands` 變更以 stacked PR 方式接在 #1 後面
 
 ### 下一個候選項目
 - 將 `lightsaber_mvp.py` 的 Tunables 抽成 `config` 區塊，便於快速調參
-- 增加 `--max-hands` 或 `--display-size` 參數，提升展示現場調整彈性
+- 增加 `--display-size` 參數，提升展示現場調整彈性

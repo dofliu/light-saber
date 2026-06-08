@@ -740,6 +740,12 @@ def update_tip_speed(slot, tip_pos, now):
 
 # -------- Main --------
 def parse_args(argv=None):
+    def positive_int(value):
+        parsed = int(value)
+        if parsed < 1:
+            raise argparse.ArgumentTypeError("value must be >= 1")
+        return parsed
+
     parser = argparse.ArgumentParser(
         description="Lightsaber MVP with MediaPipe hand tracking.")
     parser.add_argument(
@@ -751,6 +757,11 @@ def parse_args(argv=None):
         "--no-mirror",
         action="store_true",
         help="Disable horizontal mirroring on preview.")
+    parser.add_argument(
+        "--max-hands",
+        type=positive_int,
+        default=MAX_HANDS,
+        help="Maximum number of hands to track (default: %(default)s).")
     return parser.parse_args(argv)
 
 
@@ -767,7 +778,7 @@ def main():
     mp_hands = mp.solutions.hands
     hands = mp_hands.Hands(
         static_image_mode=False,
-        max_num_hands=MAX_HANDS,
+        max_num_hands=args.max_hands,
         model_complexity=MP_MODEL_COMPLEXITY,
         min_detection_confidence=0.6,
         min_tracking_confidence=0.5,
@@ -794,7 +805,7 @@ def main():
     cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(win_name, DISPLAY_WIDTH, DISPLAY_HEIGHT)
 
-    slots = [HandSlot(i) for i in range(MAX_HANDS)]
+    slots = [HandSlot(i) for i in range(args.max_hands)]
     last_t = time.time()
     fps_acc, fps_cnt, fps = 0.0, 0, 0.0
 
