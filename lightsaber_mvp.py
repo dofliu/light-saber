@@ -756,6 +756,12 @@ def parse_args(argv=None):
                 "value must use WIDTHxHEIGHT format") from exc
         return width, height
 
+    def process_scale(value):
+        parsed = float(value)
+        if parsed <= 0.0 or parsed > 1.0:
+            raise argparse.ArgumentTypeError("value must be > 0 and <= 1")
+        return parsed
+
     parser = argparse.ArgumentParser(
         description="Lightsaber MVP with MediaPipe hand tracking.")
     parser.add_argument(
@@ -778,6 +784,11 @@ def parse_args(argv=None):
         default=(DISPLAY_WIDTH, DISPLAY_HEIGHT),
         metavar="WIDTHxHEIGHT",
         help="Initial OpenCV window size (default: %(default)s).")
+    parser.add_argument(
+        "--process-scale",
+        type=process_scale,
+        default=MP_PROCESS_SCALE,
+        help="Frame scale used before MediaPipe processing (default: %(default)s).")
     return parser.parse_args(argv)
 
 
@@ -840,8 +851,8 @@ def main():
         dt = max(1e-3, now - last_t)
         last_t = now
 
-        if MP_PROCESS_SCALE != 1.0:
-            small = cv2.resize(frame, None, fx=MP_PROCESS_SCALE, fy=MP_PROCESS_SCALE,
+        if args.process_scale != 1.0:
+            small = cv2.resize(frame, None, fx=args.process_scale, fy=args.process_scale,
                                interpolation=cv2.INTER_LINEAR)
         else:
             small = frame
