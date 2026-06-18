@@ -746,6 +746,16 @@ def parse_args(argv=None):
             raise argparse.ArgumentTypeError("value must be >= 1")
         return parsed
 
+    def display_size(value):
+        try:
+            width_text, height_text = value.lower().split("x", 1)
+            width = positive_int(width_text)
+            height = positive_int(height_text)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                "value must use WIDTHxHEIGHT format") from exc
+        return width, height
+
     parser = argparse.ArgumentParser(
         description="Lightsaber MVP with MediaPipe hand tracking.")
     parser.add_argument(
@@ -762,6 +772,12 @@ def parse_args(argv=None):
         type=positive_int,
         default=MAX_HANDS,
         help="Maximum number of hands to track (default: %(default)s).")
+    parser.add_argument(
+        "--display-size",
+        type=display_size,
+        default=(DISPLAY_WIDTH, DISPLAY_HEIGHT),
+        metavar="WIDTHxHEIGHT",
+        help="Initial OpenCV window size (default: %(default)s).")
     return parser.parse_args(argv)
 
 
@@ -803,7 +819,7 @@ def main():
 
     win_name = "Lightsaber"
     cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(win_name, DISPLAY_WIDTH, DISPLAY_HEIGHT)
+    cv2.resizeWindow(win_name, *args.display_size)
 
     slots = [HandSlot(i) for i in range(args.max_hands)]
     last_t = time.time()

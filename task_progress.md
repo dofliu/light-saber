@@ -19,9 +19,15 @@
 - 增加 CLI 參數：`--max-hands`，讓展示現場可限制手部追蹤數量
 - 補上 `--max-hands` 測試，涵蓋預設值、自訂值與非法值
 
+## 2026-06-18
+
+### 已完成
+- 增加 CLI 參數：`--display-size WIDTHxHEIGHT`，讓展示現場可調整 OpenCV 視窗初始大小
+- 補上 `--display-size` 測試，涵蓋預設值、自訂值、格式錯誤與非正整數
+
 ### 目前進行中
-- 等待 #1 合併；本次 `--max-hands` 變更以 stacked PR 方式接在 #1 後面
+- 等待 #1 與 #2 合併；本次 `--display-size` 變更以 stacked PR 方式接在 #2 後面
 
 ### 下一個候選項目
 - 將 `lightsaber_mvp.py` 的 Tunables 抽成 `config` 區塊，便於快速調參
-- 增加 `--display-size` 參數，提升展示現場調整彈性
+- 增加 `--process-scale` 參數，便於展示現場在效能與追蹤精度間調整
