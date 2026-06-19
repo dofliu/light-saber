@@ -30,10 +30,12 @@
 ### 已完成
 - 增加 CLI 參數：`--process-scale`，便於展示現場在效能與追蹤精度間調整
 - 補上 `--process-scale` 測試，涵蓋預設值、自訂值、零值與超出上限
+- 增加 CLI 參數：`--model-complexity`，便於不同設備調整 MediaPipe 模型負載
+- 補上 `--model-complexity` 測試，限制值只能是 `0` 或 `1`
 
 ### 目前進行中
-- 等待 #1、#2 與 #3 合併；本次 `--process-scale` 變更以 stacked PR 方式接在 #3 後面
+- 等待 #1、#2、#3 與 #4 合併；本次 `--model-complexity` 變更以 stacked PR 方式接在 #4 後面
 
 ### 下一個候選項目
 - 將 `lightsaber_mvp.py` 的 Tunables 抽成 `config` 區塊，便於快速調參
-- 增加 `--model-complexity` 參數，便於不同設備調整 MediaPipe 模型負載
+- 增加 `--min-detection-confidence` 與 `--min-tracking-confidence` 參數，讓展示現場可調整追蹤穩定度

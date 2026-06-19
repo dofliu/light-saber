@@ -762,6 +762,12 @@ def parse_args(argv=None):
             raise argparse.ArgumentTypeError("value must be > 0 and <= 1")
         return parsed
 
+    def model_complexity(value):
+        parsed = int(value)
+        if parsed not in (0, 1):
+            raise argparse.ArgumentTypeError("value must be 0 or 1")
+        return parsed
+
     parser = argparse.ArgumentParser(
         description="Lightsaber MVP with MediaPipe hand tracking.")
     parser.add_argument(
@@ -789,6 +795,11 @@ def parse_args(argv=None):
         type=process_scale,
         default=MP_PROCESS_SCALE,
         help="Frame scale used before MediaPipe processing (default: %(default)s).")
+    parser.add_argument(
+        "--model-complexity",
+        type=model_complexity,
+        default=MP_MODEL_COMPLEXITY,
+        help="MediaPipe Hands model complexity, 0 or 1 (default: %(default)s).")
     return parser.parse_args(argv)
 
 
@@ -806,7 +817,7 @@ def main():
     hands = mp_hands.Hands(
         static_image_mode=False,
         max_num_hands=args.max_hands,
-        model_complexity=MP_MODEL_COMPLEXITY,
+        model_complexity=args.model_complexity,
         min_detection_confidence=0.6,
         min_tracking_confidence=0.5,
     )
