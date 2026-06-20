@@ -272,6 +272,72 @@ class ArcadeGameTest(unittest.TestCase):
         self.assertFalse(game.new_high_score)
         self.assertEqual(game.result_reason, "")
 
+    def activate_boss(self):
+        self.start_playing()
+        boss_time = 13.0 + max(
+            5.0, self.game.round_seconds * lightsaber_mvp.BOSS_START_RATIO)
+        self.game.update(boss_time + 0.01, 1280, 720)
+        self.assertTrue(self.game.boss_active)
+        return boss_time + 0.01
+
+    def hit_current_target(self, now):
+        target = self.game.targets[0]
+        start = target.center + np.array([-target.radius * 2, 0.0])
+        end = target.center + np.array([target.radius * 2, 0.0])
+        return self.game.register_blade(
+            start, end, speed=15.0, now=now,
+            swing_vector=target.direction * 15.0,
+        )
+
+    def test_boss_activates_with_laser_volley(self):
+        boss_time = self.activate_boss()
+        self.game.laser_bolts.clear()
+        self.game.next_laser_at = boss_time
+
+        self.game.update(boss_time + 0.01, 1280, 720)
+
+        self.assertTrue(self.game.boss_appeared)
+        self.assertEqual(len(self.game.laser_bolts), 2)
+
+    def test_target_hit_damages_active_boss(self):
+        boss_time = self.activate_boss()
+        hp_before = self.game.boss_hp
+
+        hit = self.hit_current_target(boss_time + 0.1)
+
+        self.assertIsNotNone(hit)
+        self.assertEqual(self.game.boss_hp, hp_before - 1)
+
+    def test_last_boss_hit_awards_defeat_bonus(self):
+        boss_time = self.activate_boss()
+        self.game.boss_hp = 1
+        score_before = self.game.score
+
+        hit = self.hit_current_target(boss_time + 0.1)
+
+        self.assertIsNotNone(hit)
+        self.assertTrue(self.game.boss_defeated)
+        self.assertFalse(self.game.boss_active)
+        self.assertGreaterEqual(
+            self.game.score - score_before,
+            lightsaber_mvp.BOSS_DEFEAT_BONUS["normal"],
+        )
+
+    def test_disabled_boss_never_activates(self):
+        game = lightsaber_mvp.ArcadeGame(
+            enabled=True,
+            round_seconds=10.0,
+            difficulty="normal",
+            seed=7,
+            boss_enabled=False,
+        )
+        game.reset(10.0)
+        game.start(10.0)
+        game.update(13.0, 1280, 720)
+        game.update(18.6, 1280, 720)
+
+        self.assertFalse(game.boss_appeared)
+
     def test_combo_expires_without_followup_hit(self):
         self.start_playing()
         self.game.combo = 3
@@ -328,10 +394,12 @@ class HighScoreStoreTest(unittest.TestCase):
 
             store.record("arcade:normal", 700)
             store.record("rhythm:normal", 900)
+            store.record("rhythm:normal:noboss", 1100)
 
             self.assertEqual(store.load(), {
                 "arcade:normal": 700,
                 "rhythm:normal": 900,
+                "rhythm:normal:noboss": 1100,
             })
 
     def test_invalid_score_file_is_ignored(self):

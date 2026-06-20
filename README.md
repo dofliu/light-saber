@@ -12,8 +12,9 @@
 - Arcade mode 提供 3 秒倒數、方向目標、揮劍速度門檻、命中評價、Combo 與回合結算。
 - `easy / normal / hard` difficulty 會調整目標時限、同時目標數、Combo window、揮劍速度與方向容許角度。
 - 敵方雷射會從畫面邊緣射向玩家；以光劍格擋可獲得 Parry 分數，漏接則扣除 Shield。
-- 支援 Pause 與各難度獨立的 persistent high score。
+- 支援 Pause，並依 target mode、difficulty 與 Boss 規則分開保存 persistent high score。
 - Rhythm target mode 依 BPM 產生拍點、metronome tick 與 approaching ring，並依揮擊時間給予 `PERFECT / GREAT / GOOD`。
+- 回合後半段進入 Boss phase；斬擊弱點降低 Boss HP，Boss 會發射雙發雷射 volley，擊敗後取得 bonus。
 
 ## 執行環境
 
@@ -70,6 +71,7 @@ python lightsaber_mvp.py --help
 | `--difficulty` | `normal` | Arcade 難度，可選 `easy`、`normal` 或 `hard`。 |
 | `--target-mode` | `arcade` | 目標生成模式，可選連續 `arcade` 或節拍 `rhythm`。 |
 | `--rhythm-bpm` | `120` | Rhythm mode 的 BPM，必須大於 0。 |
+| `--no-boss` | 關閉 | 停用回合後半段的 Boss encounter。 |
 | `--round-seconds` | `60` | Arcade 回合秒數，必須大於 0。 |
 | `--game-seed` | 無 | 固定目標亂數，供測試與重現 demo 使用。 |
 | `--score-file` | `~/.lightsaber_mvp/scores.json` | High score JSON 儲存位置。 |
@@ -83,6 +85,7 @@ python lightsaber_mvp.py --help
 | 朝目標箭頭方向揮劍 | Arcade mode 正確斬擊；反方向不計分 |
 | 在 approaching ring 收合時揮劍 | Rhythm mode 拍點命中；太早不計分 |
 | 以光劍攔截紅色雷射 | Parry 並獲得額外分數 |
+| Boss 出現後持續斬擊方向目標 | 削減 Boss HP 並取得擊敗 bonus |
 | `F` | 切換 fullscreen |
 | `M` | 切換鏡像 |
 | `D` | 顯示或隱藏 hand landmarks |
@@ -100,7 +103,7 @@ python -m unittest discover -s tests -v
 python -m py_compile lightsaber_mvp.py tests/test_cli_args.py
 ```
 
-目前 automated tests 涵蓋 CLI 驗證、遊戲狀態轉換、Pause、high score persistence、BeatTimeline、Rhythm timing score、目標生命週期、線段命中、揮劍速度與方向門檻、difficulty、計分、Combo、雷射移動、Parry 與 Shield damage。Camera、手勢辨識、畫面與音效仍需以 webcam 進行手動 smoke test。
+目前 automated tests 涵蓋 CLI 驗證、遊戲狀態轉換、Pause、high score persistence、BeatTimeline、Rhythm timing score、Boss phase、目標生命週期、線段命中、揮劍速度與方向門檻、difficulty、計分、Combo、雷射移動、Parry 與 Shield damage。Camera、手勢辨識、畫面與音效仍需以 webcam 進行手動 smoke test。
 
 ## 專案結構
 
@@ -135,6 +138,7 @@ Webcam frame
 - 光劍碰撞採 2D 線段交點判定，不代表真實 3D 空間碰撞。
 - 雷射目前以 2D 等速路徑移動，尚未加入敵人模型與預警動畫。
 - Rhythm mode 目前使用合成 metronome，尚未支援外部音樂檔與 beat-map editor。
+- Boss 目前為單一 core 與雙發 volley pattern，尚未加入角色動畫與多階段 attack pattern。
 - 主要程式集中在單一 Python 檔案，後續擴充與 isolated testing 成本較高。
 - 尚未建立 camera-independent 的錄影回放測試與效能 benchmark。
 

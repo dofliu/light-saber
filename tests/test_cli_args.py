@@ -22,6 +22,7 @@ class CliArgsTest(unittest.TestCase):
         self.assertEqual(args.difficulty, "normal")
         self.assertEqual(args.target_mode, "arcade")
         self.assertEqual(args.rhythm_bpm, 120.0)
+        self.assertFalse(args.no_boss)
         self.assertEqual(args.round_seconds, lightsaber_mvp.GAME_ROUND_SECONDS)
         self.assertIsNone(args.game_seed)
         self.assertEqual(args.score_file, lightsaber_mvp.DEFAULT_SCORE_FILE)
@@ -38,6 +39,7 @@ class CliArgsTest(unittest.TestCase):
             "--difficulty", "hard",
             "--target-mode", "rhythm",
             "--rhythm-bpm", "128",
+            "--no-boss",
             "--round-seconds", "90",
             "--game-seed", "42",
             "--score-file", "scores-test.json",
@@ -53,6 +55,7 @@ class CliArgsTest(unittest.TestCase):
         self.assertEqual(args.difficulty, "hard")
         self.assertEqual(args.target_mode, "rhythm")
         self.assertEqual(args.rhythm_bpm, 128.0)
+        self.assertTrue(args.no_boss)
         self.assertEqual(args.round_seconds, 90.0)
         self.assertEqual(args.game_seed, 42)
         self.assertEqual(args.score_file, "scores-test.json")

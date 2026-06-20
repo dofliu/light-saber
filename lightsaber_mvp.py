@@ -113,6 +113,9 @@ GAME_HIT_MIN_SPEED = 3.0
 GAME_STARTING_LIVES = 3
 GAME_LASER_RADIUS = 16
 RHYTHM_LEAD_SECONDS = 1.25
+BOSS_START_RATIO = 0.55
+BOSS_HP = {"easy": 6, "normal": 10, "hard": 14}
+BOSS_DEFEAT_BONUS = {"easy": 1500, "normal": 2500, "hard": 4000}
 DEFAULT_SCORE_FILE = os.path.join(
     os.path.expanduser("~"), ".lightsaber_mvp", "scores.json")
 
@@ -167,10 +170,13 @@ class HighScoreStore:
             return {}
         scores = {}
         for difficulty, score in data.items():
-            valid_key = difficulty in DIFFICULTY_PRESETS or any(
-                difficulty == f"{mode}:{level}"
-                for mode in ("arcade", "rhythm")
-                for level in DIFFICULTY_PRESETS)
+            parts = difficulty.split(":")
+            valid_key = difficulty in DIFFICULTY_PRESETS
+            if len(parts) in (2, 3):
+                valid_key = (
+                    parts[0] in ("arcade", "rhythm")
+                    and parts[1] in DIFFICULTY_PRESETS
+                    and (len(parts) == 2 or parts[2] in ("boss", "noboss")))
             if valid_key and isinstance(score, int) and score >= 0:
                 scores[difficulty] = score
         return scores
@@ -452,7 +458,8 @@ class ArcadeGame:
 
     def __init__(self, enabled=True, round_seconds=GAME_ROUND_SECONDS,
                  difficulty="normal", seed=None, high_score=0,
-                 target_mode="arcade", rhythm_bpm=120.0):
+                 target_mode="arcade", rhythm_bpm=120.0,
+                 boss_enabled=True):
         self.enabled = enabled
         self.round_seconds = float(round_seconds)
         self.difficulty = DIFFICULTY_PRESETS[difficulty]
@@ -460,6 +467,7 @@ class ArcadeGame:
         self.rhythm_bpm = float(rhythm_bpm)
         self.timeline = BeatTimeline(
             self.rhythm_bpm, self.difficulty.rhythm_stride)
+        self.boss_enabled = boss_enabled
         self.rng = np.random.default_rng(seed)
         self.state = "ready" if enabled else "free"
         self.state_started_at = 0.0
@@ -483,6 +491,12 @@ class ArcadeGame:
         self._next_bolt_id = 1
         self.next_laser_at = 1e9
         self.evt_beat = False
+        self.boss_active = False
+        self.boss_appeared = False
+        self.boss_defeated = False
+        self.boss_max_hp = BOSS_HP[self.difficulty.name]
+        self.boss_hp = self.boss_max_hp
+        self.boss_center = np.zeros(2, dtype=np.float32)
 
     def set_enabled(self, enabled, now):
         self.enabled = enabled
@@ -508,6 +522,11 @@ class ArcadeGame:
         self.hit_flashes.clear()
         self.next_laser_at = 1e9
         self.evt_beat = False
+        self.boss_active = False
+        self.boss_appeared = False
+        self.boss_defeated = False
+        self.boss_hp = self.boss_max_hp
+        self.boss_center[:] = 0.0
         self.timeline.start(0.0)
 
     def start(self, now):
@@ -576,6 +595,17 @@ class ArcadeGame:
             self._finish("complete", now)
             return
 
+        boss_start = max(5.0, self.round_seconds * BOSS_START_RATIO)
+        if (self.boss_enabled and not self.boss_appeared
+                and self.elapsed(now) >= boss_start):
+            self.boss_active = True
+            self.boss_appeared = True
+            self.boss_center = np.array(
+                [width * 0.5, height * 0.18], dtype=np.float32)
+            self.next_laser_at = min(self.next_laser_at, now + 0.7)
+            self.hit_flashes.append(
+                (self.boss_center.copy(), now, 0, "BOSS INCOMING"))
+
         active_bolts = []
         for bolt in self.laser_bolts:
             if now >= bolt.danger_at:
@@ -593,9 +623,13 @@ class ArcadeGame:
             return
 
         if now >= self.next_laser_at:
-            self.laser_bolts.append(self._spawn_laser(now, width, height))
+            volley_size = 2 if self.boss_active else 1
+            for _ in range(volley_size):
+                self.laser_bolts.append(self._spawn_laser(now, width, height))
             jitter = float(self.rng.uniform(0.85, 1.15))
-            self.next_laser_at = now + self.difficulty.laser_interval * jitter
+            attack_scale = 0.68 if self.boss_active else 1.0
+            self.next_laser_at = (
+                now + self.difficulty.laser_interval * attack_scale * jitter)
 
         active_targets = []
         for target in self.targets:
@@ -631,8 +665,13 @@ class ArcadeGame:
                 self.rng.integers(left, right),
                 self.rng.integers(top, bottom),
             ], dtype=np.float32)
-            if all(np.linalg.norm(candidate - item.center) > radius * 2.5
-                   for item in self.targets):
+            avoids_targets = all(
+                np.linalg.norm(candidate - item.center) > radius * 2.5
+                for item in self.targets)
+            avoids_boss = (
+                not self.boss_active
+                or np.linalg.norm(candidate - self.boss_center) > radius + 115)
+            if avoids_targets and avoids_boss:
                 center = candidate
                 break
         if center is None:
@@ -745,8 +784,25 @@ class ArcadeGame:
             self.score += gained
             self.targets.remove(target)
             self.hit_flashes.append((target.center.copy(), now, gained, quality))
+            self._damage_boss(now)
             return target.center.copy(), gained
         return None
+
+    def _damage_boss(self, now):
+        if not self.boss_active:
+            return
+        self.boss_hp = max(0, self.boss_hp - 1)
+        if self.boss_hp > 0:
+            self.hit_flashes.append(
+                (self.boss_center.copy(), now, 0, f"BOSS HP {self.boss_hp}"))
+            return
+        self.boss_active = False
+        self.boss_defeated = True
+        bonus = BOSS_DEFEAT_BONUS[self.difficulty.name]
+        self.score += bonus
+        self.laser_bolts.clear()
+        self.hit_flashes.append(
+            (self.boss_center.copy(), now, bonus, "BOSS DEFEATED"))
 
     def register_laser_parry(self, start, end, speed, now):
         if self.state != "playing" or speed < self.difficulty.min_hit_speed:
@@ -975,6 +1031,43 @@ def _draw_centered_text(frame, text, y, scale, color, thickness=2):
                 color, thickness, cv2.LINE_AA)
 
 
+def draw_boss(frame, game, now):
+    if not game.boss_active or game.state not in ("playing", "paused"):
+        return
+    now = game.effective_now(now)
+    center = to_pt(game.boss_center)
+    pulse = 1.0 + 0.08 * math.sin(now * 6.0)
+    radius = int(52 * pulse)
+    overlay = frame.copy()
+    cv2.circle(overlay, center, radius + 34, (20, 20, 180), -1, cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.22, frame, 0.78, 0, dst=frame)
+    cv2.circle(frame, center, radius, (35, 35, 100), -1, cv2.LINE_AA)
+    cv2.circle(frame, center, radius, (80, 80, 255), 4, cv2.LINE_AA)
+    cv2.circle(frame, center, max(10, radius // 3), (100, 180, 255), -1,
+               cv2.LINE_AA)
+    angle = int((now * 70) % 360)
+    for offset in (0, 120, 240):
+        cv2.ellipse(frame, center, (radius + 12, radius + 12),
+                    0, angle + offset, angle + offset + 55,
+                    (200, 220, 255), 3, cv2.LINE_AA)
+
+    bar_width = 240
+    bar_height = 14
+    bar_x = center[0] - bar_width // 2
+    bar_y = center[1] + radius + 24
+    health_ratio = game.boss_hp / max(1, game.boss_max_hp)
+    cv2.rectangle(frame, (bar_x, bar_y),
+                  (bar_x + bar_width, bar_y + bar_height), (30, 30, 30), -1)
+    cv2.rectangle(frame, (bar_x, bar_y),
+                  (bar_x + int(bar_width * health_ratio), bar_y + bar_height),
+                  (60, 70, 255), -1)
+    cv2.rectangle(frame, (bar_x, bar_y),
+                  (bar_x + bar_width, bar_y + bar_height),
+                  (220, 220, 220), 2)
+    _draw_centered_text(frame, f"BOSS {game.boss_hp}/{game.boss_max_hp}",
+                        bar_y - 8, 0.48, (220, 220, 255), 1)
+
+
 def draw_arcade_targets(frame, game, now):
     if game.state not in ("playing", "paused"):
         return
@@ -1106,11 +1199,18 @@ def draw_arcade_ui(frame, game, now):
                             center_y + 10, 0.75, (230, 230, 230), 2)
         _draw_centered_text(frame, f"PARRIES {game.parries}   BEST COMBO x{game.best_combo}",
                             center_y + 50, 0.75, (230, 230, 230), 2)
+        if game.boss_appeared:
+            boss_result = "BOSS DEFEATED" if game.boss_defeated else "BOSS SURVIVED"
+            boss_color = (80, 255, 255) if game.boss_defeated else (80, 120, 255)
+            _draw_centered_text(frame, boss_result, center_y + 84,
+                                0.68, boss_color, 2)
         if game.new_high_score:
-            _draw_centered_text(frame, "NEW HIGH SCORE", center_y + 88,
+            high_score_y = center_y + (118 if game.boss_appeared else 88)
+            _draw_centered_text(frame, "NEW HIGH SCORE", high_score_y,
                                 0.72, (80, 255, 255), 2)
+        controls_y = center_y + (160 if game.boss_appeared else 130)
         _draw_centered_text(frame, "SPACE: play again  |  G: free play",
-                            center_y + 130, 0.62, (255, 255, 255), 2)
+                            controls_y, 0.62, (255, 255, 255), 2)
 
     for center, hit_at, gained, quality in list(game.hit_flashes):
         age = now - hit_at
@@ -1119,7 +1219,8 @@ def draw_arcade_ui(frame, game, now):
         alpha = 1.0 - age / 0.7
         pos = to_pt(center + np.array([0.0, -45.0 * age], dtype=np.float32))
         color = tuple(int(255 * alpha) for _ in range(3))
-        cv2.putText(frame, f"{quality} +{gained}", pos, cv2.FONT_HERSHEY_SIMPLEX,
+        feedback_text = f"{quality} +{gained}" if gained > 0 else quality
+        cv2.putText(frame, feedback_text, pos, cv2.FONT_HERSHEY_SIMPLEX,
                     0.8, color, 2, cv2.LINE_AA)
 
 
@@ -1520,6 +1621,10 @@ def parse_args(argv=None):
         default=120.0,
         help="Rhythm target tempo in beats per minute (default: %(default)s).")
     parser.add_argument(
+        "--no-boss",
+        action="store_true",
+        help="Disable the late-round boss encounter.")
+    parser.add_argument(
         "--round-seconds",
         type=positive_float,
         default=GAME_ROUND_SECONDS,
@@ -1579,16 +1684,21 @@ def main():
     slots = [HandSlot(i) for i in range(args.max_hands)]
     score_store = HighScoreStore(args.score_file)
     stored_scores = score_store.load()
-    score_key = f"{args.target_mode}:{args.difficulty}"
+    boss_score_mode = "noboss" if args.no_boss else "boss"
+    score_key = f"{args.target_mode}:{args.difficulty}:{boss_score_mode}"
     game = ArcadeGame(
         enabled=args.game_mode == "arcade",
         round_seconds=args.round_seconds,
         difficulty=args.difficulty,
         seed=args.game_seed,
         high_score=stored_scores.get(
-            score_key, stored_scores.get(args.difficulty, 0)),
+            score_key,
+            stored_scores.get(
+                f"{args.target_mode}:{args.difficulty}",
+                stored_scores.get(args.difficulty, 0))),
         target_mode=args.target_mode,
         rhythm_bpm=args.rhythm_bpm,
+        boss_enabled=not args.no_boss,
     )
     game.reset(time.time())
     last_t = time.time()
@@ -1651,6 +1761,7 @@ def main():
             if slot.evt_retract:
                 audio.play_retract()
 
+        draw_boss(frame, game, now)
         draw_arcade_targets(frame, game, now)
         draw_laser_bolts(frame, game, now)
 

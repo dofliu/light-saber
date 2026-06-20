@@ -34,3 +34,4 @@
 - 新增敵方雷射、光劍 Parry、Shield lives 與攻防循環 tests。
 - 新增 Pause time freeze 與 persistent high score。
 - 新增 BPM BeatTimeline、Rhythm mode、metronome 與 timing score。
+- 新增 Boss phase、HP、弱點傷害、雙發雷射 volley 與 defeat bonus。
