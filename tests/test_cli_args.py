@@ -22,6 +22,7 @@ class CliArgsTest(unittest.TestCase):
         self.assertEqual(args.difficulty, "normal")
         self.assertEqual(args.round_seconds, lightsaber_mvp.GAME_ROUND_SECONDS)
         self.assertIsNone(args.game_seed)
+        self.assertEqual(args.score_file, lightsaber_mvp.DEFAULT_SCORE_FILE)
 
     def test_custom_camera_and_no_mirror(self):
         args = lightsaber_mvp.parse_args([
@@ -35,6 +36,7 @@ class CliArgsTest(unittest.TestCase):
             "--difficulty", "hard",
             "--round-seconds", "90",
             "--game-seed", "42",
+            "--score-file", "scores-test.json",
         ])
 
         self.assertEqual(args.camera_index, 1)
@@ -47,6 +49,7 @@ class CliArgsTest(unittest.TestCase):
         self.assertEqual(args.difficulty, "hard")
         self.assertEqual(args.round_seconds, 90.0)
         self.assertEqual(args.game_seed, 42)
+        self.assertEqual(args.score_file, "scores-test.json")
 
     def test_max_hands_must_be_positive(self):
         with contextlib.redirect_stderr(io.StringIO()):

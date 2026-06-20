@@ -32,3 +32,4 @@
 - 新增方向目標、揮劍方向評分與 `WRONG WAY` 回饋。
 - 新增 `easy / normal / hard` difficulty presets 與相關 tests。
 - 新增敵方雷射、光劍 Parry、Shield lives 與攻防循環 tests。
+- 新增 Pause time freeze 與 persistent high score。

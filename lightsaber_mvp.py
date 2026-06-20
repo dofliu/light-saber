@@ -29,6 +29,7 @@ Keys:
 """
 
 import argparse
+import json
 import math
 import os
 import time
@@ -111,6 +112,8 @@ GAME_TARGET_RADIUS = 42
 GAME_HIT_MIN_SPEED = 3.0
 GAME_STARTING_LIVES = 3
 GAME_LASER_RADIUS = 16
+DEFAULT_SCORE_FILE = os.path.join(
+    os.path.expanduser("~"), ".lightsaber_mvp", "scores.json")
 
 
 @dataclass(frozen=True)
@@ -142,6 +145,39 @@ SWING_DIRECTIONS = (
     ("UP-LEFT", np.array([-0.7071, -0.7071], dtype=np.float32)),
     ("UP-RIGHT", np.array([0.7071, -0.7071], dtype=np.float32)),
 )
+
+
+class HighScoreStore:
+    def __init__(self, path=DEFAULT_SCORE_FILE):
+        self.path = os.path.abspath(os.path.expanduser(path))
+
+    def load(self):
+        try:
+            with open(self.path, "r", encoding="utf-8") as score_file:
+                data = json.load(score_file)
+        except (FileNotFoundError, OSError, ValueError, TypeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        scores = {}
+        for difficulty, score in data.items():
+            if difficulty in DIFFICULTY_PRESETS and isinstance(score, int) and score >= 0:
+                scores[difficulty] = score
+        return scores
+
+    def record(self, difficulty, score):
+        scores = self.load()
+        previous = scores.get(difficulty, 0)
+        if score <= previous:
+            return previous
+        scores[difficulty] = int(score)
+        directory = os.path.dirname(self.path)
+        os.makedirs(directory, exist_ok=True)
+        temporary_path = self.path + ".tmp"
+        with open(temporary_path, "w", encoding="utf-8") as score_file:
+            json.dump(scores, score_file, ensure_ascii=False, indent=2)
+        os.replace(temporary_path, self.path)
+        return score
 
 BLADE_COLORS = [
     (255,  95,  40),
@@ -357,7 +393,7 @@ class ArcadeGame:
     """Camera-independent arcade round state and scoring logic."""
 
     def __init__(self, enabled=True, round_seconds=GAME_ROUND_SECONDS,
-                 difficulty="normal", seed=None):
+                 difficulty="normal", seed=None, high_score=0):
         self.enabled = enabled
         self.round_seconds = float(round_seconds)
         self.difficulty = DIFFICULTY_PRESETS[difficulty]
@@ -365,8 +401,13 @@ class ArcadeGame:
         self.state = "ready" if enabled else "free"
         self.state_started_at = 0.0
         self.result_reason = ""
+        self.paused_at = 0.0
+        self.high_score = int(high_score)
+        self.new_high_score = False
         self.round_started_at = 0.0
         self.result_reason = ""
+        self.paused_at = 0.0
+        self.new_high_score = False
         self.score = 0
         self.combo = 0
         self.best_combo = 0
@@ -411,6 +452,39 @@ class ArcadeGame:
         self.state_started_at = now
         return True
 
+    def toggle_pause(self, now):
+        if self.state == "playing":
+            self.state = "paused"
+            self.paused_at = now
+            return True
+        if self.state != "paused":
+            return False
+        paused_duration = max(0.0, now - self.paused_at)
+        self.state = "playing"
+        self.round_started_at += paused_duration
+        self.state_started_at += paused_duration
+        self.last_hit_at += paused_duration
+        self.next_laser_at += paused_duration
+        for target in self.targets:
+            target.spawned_at += paused_duration
+            target.expires_at += paused_duration
+            target.last_wrong_at += paused_duration
+        for bolt in self.laser_bolts:
+            bolt.spawned_at += paused_duration
+            bolt.danger_at += paused_duration
+        self.paused_at = 0.0
+        return True
+
+    def _finish(self, reason, now):
+        self.state = "results"
+        self.state_started_at = now
+        self.result_reason = reason
+        self.targets.clear()
+        self.laser_bolts.clear()
+        if self.score > self.high_score:
+            self.high_score = self.score
+            self.new_high_score = True
+
     def update(self, now, width, height):
         if not self.enabled:
             return
@@ -425,11 +499,7 @@ class ArcadeGame:
         if self.combo > 0 and now - self.last_hit_at > self.difficulty.combo_window:
             self.combo = 0
         if now - self.round_started_at >= self.round_seconds:
-            self.state = "results"
-            self.state_started_at = now
-            self.result_reason = "complete"
-            self.targets.clear()
-            self.laser_bolts.clear()
+            self._finish("complete", now)
             return
 
         active_bolts = []
@@ -445,11 +515,7 @@ class ArcadeGame:
                 active_bolts.append(bolt)
         self.laser_bolts = active_bolts
         if self.lives <= 0:
-            self.state = "results"
-            self.state_started_at = now
-            self.result_reason = "game_over"
-            self.targets.clear()
-            self.laser_bolts.clear()
+            self._finish("game_over", now)
             return
 
         if now >= self.next_laser_at:
@@ -596,12 +662,16 @@ class ArcadeGame:
         return None
 
     def elapsed(self, now):
+        now = self.effective_now(now)
         if self.round_started_at <= 0.0:
             return 0.0
         return max(0.0, now - self.round_started_at)
 
     def remaining(self, now):
         return max(0.0, self.round_seconds - self.elapsed(now))
+
+    def effective_now(self, now):
+        return self.paused_at if self.state == "paused" else now
 
 
 # -------- Hilt --------
@@ -802,8 +872,9 @@ def _draw_centered_text(frame, text, y, scale, color, thickness=2):
 
 
 def draw_arcade_targets(frame, game, now):
-    if game.state != "playing":
+    if game.state not in ("playing", "paused"):
         return
+    now = game.effective_now(now)
     for target in game.targets:
         center = to_pt(target.center)
         remaining_ratio = max(0.0, min(
@@ -828,8 +899,9 @@ def draw_arcade_targets(frame, game, now):
 
 
 def draw_laser_bolts(frame, game, now):
-    if game.state != "playing":
+    if game.state not in ("playing", "paused"):
         return
+    now = game.effective_now(now)
     for bolt in game.laser_bolts:
         speed = max(1.0, float(np.linalg.norm(bolt.velocity)))
         direction = bolt.velocity / speed
@@ -851,7 +923,7 @@ def draw_arcade_ui(frame, game, now):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (220, 220, 220), 2, cv2.LINE_AA)
         return
 
-    if game.state == "playing":
+    if game.state in ("playing", "paused"):
         cv2.putText(frame, f"SCORE {game.score:06d}", (14, 38),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
         combo_color = (80, 255, 255) if game.combo >= 5 else (220, 220, 220)
@@ -862,6 +934,22 @@ def draw_arcade_ui(frame, game, now):
         lives_color = (80, 255, 80) if game.lives > 1 else (60, 60, 255)
         cv2.putText(frame, f"SHIELD {game.lives}", (14, 132),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, lives_color, 2, cv2.LINE_AA)
+        high_score_text = f"HIGH {game.high_score:06d}"
+        (high_width, _), _ = cv2.getTextSize(
+            high_score_text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        cv2.putText(frame, high_score_text,
+                    (frame.shape[1] - high_width - 14, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (170, 170, 170), 1,
+                    cv2.LINE_AA)
+        if game.state == "paused":
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]),
+                          (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
+            _draw_centered_text(frame, "PAUSED", frame.shape[0] // 2 - 10,
+                                1.4, (80, 255, 255), 3)
+            _draw_centered_text(frame, "P: resume", frame.shape[0] // 2 + 45,
+                                0.7, (255, 255, 255), 2)
         remaining_text = f"TIME {game.remaining(now):04.1f}"
         (text_width, _), _ = cv2.getTextSize(
             remaining_text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
@@ -872,6 +960,8 @@ def draw_arcade_ui(frame, game, now):
                             1.15, (80, 255, 255), 3)
         _draw_centered_text(frame, "SPACE: start  |  G: free play",
                             frame.shape[0] // 2 + 25, 0.7, (255, 255, 255), 2)
+        _draw_centered_text(frame, f"HIGH SCORE {game.high_score}",
+                            frame.shape[0] // 2 + 70, 0.58, (180, 180, 180), 1)
     elif game.state == "countdown":
         remaining = max(1, int(math.ceil(
             GAME_COUNTDOWN_SECONDS - (now - game.state_started_at))))
@@ -894,8 +984,11 @@ def draw_arcade_ui(frame, game, now):
                             center_y + 10, 0.75, (230, 230, 230), 2)
         _draw_centered_text(frame, f"PARRIES {game.parries}   BEST COMBO x{game.best_combo}",
                             center_y + 50, 0.75, (230, 230, 230), 2)
+        if game.new_high_score:
+            _draw_centered_text(frame, "NEW HIGH SCORE", center_y + 88,
+                                0.72, (80, 255, 255), 2)
         _draw_centered_text(frame, "SPACE: play again  |  G: free play",
-                            center_y + 110, 0.62, (255, 255, 255), 2)
+                            center_y + 130, 0.62, (255, 255, 255), 2)
 
     for center, hit_at, gained, quality in list(game.hit_flashes):
         age = now - hit_at
@@ -1289,6 +1382,10 @@ def parse_args(argv=None):
         type=int,
         default=None,
         help="Optional deterministic target seed for testing or demos.")
+    parser.add_argument(
+        "--score-file",
+        default=DEFAULT_SCORE_FILE,
+        help="JSON file used for persistent high scores.")
     return parser.parse_args(argv)
 
 
@@ -1333,11 +1430,14 @@ def main():
     cv2.resizeWindow(win_name, *args.display_size)
 
     slots = [HandSlot(i) for i in range(args.max_hands)]
+    score_store = HighScoreStore(args.score_file)
+    stored_scores = score_store.load()
     game = ArcadeGame(
         enabled=args.game_mode == "arcade",
         round_seconds=args.round_seconds,
         difficulty=args.difficulty,
         seed=args.game_seed,
+        high_score=stored_scores.get(args.difficulty, 0),
     )
     game.reset(time.time())
     last_t = time.time()
@@ -1358,7 +1458,13 @@ def main():
         now = time.time()
         dt = max(1e-3, now - last_t)
         last_t = now
+        previous_game_state = game.state
         game.update(now, w, h)
+        if previous_game_state != "results" and game.state == "results":
+            try:
+                score_store.record(args.difficulty, game.score)
+            except OSError as error:
+                print(f"[Score] cannot save high score: {error}")
 
         if args.process_scale != 1.0:
             small = cv2.resize(frame, None, fx=args.process_scale, fy=args.process_scale,
@@ -1487,6 +1593,8 @@ def main():
             game.set_enabled(not game.enabled, now)
         elif key in (ord('r'), ord('R')):
             game.reset(now)
+        elif key in (ord('p'), ord('P')):
+            game.toggle_pause(now)
         elif key in (ord('m'), ord('M')):
             mirror = not mirror
         elif key in (ord('d'), ord('D')):

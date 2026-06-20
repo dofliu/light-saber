@@ -1,4 +1,6 @@
 import unittest
+import os
+import tempfile
 
 import numpy as np
 
@@ -191,6 +193,50 @@ class ArcadeGameTest(unittest.TestCase):
         self.assertEqual(self.game.lives, 0)
         self.assertEqual(self.game.result_reason, "game_over")
 
+    def test_pause_freezes_round_and_target_clocks(self):
+        self.start_playing()
+        target = self.game.targets[0]
+        original_expiry = target.expires_at
+        remaining_before = self.game.remaining(14.0)
+
+        self.assertTrue(self.game.toggle_pause(14.0))
+        self.game.update(30.0, 1280, 720)
+        self.assertEqual(self.game.state, "paused")
+        self.assertIn(target, self.game.targets)
+        self.assertTrue(self.game.toggle_pause(19.0))
+
+        self.assertEqual(self.game.state, "playing")
+        self.assertAlmostEqual(self.game.remaining(19.0), remaining_before)
+        self.assertAlmostEqual(target.expires_at, original_expiry + 5.0)
+
+    def test_pause_freezes_laser_damage(self):
+        self.start_playing()
+        bolt = self.spawn_laser()
+        self.game.toggle_pause(13.3)
+
+        self.game.update(bolt.danger_at + 5.0, 1280, 720)
+
+        self.assertEqual(self.game.lives, lightsaber_mvp.GAME_STARTING_LIVES)
+        self.assertIn(bolt, self.game.laser_bolts)
+
+    def test_finishing_above_high_score_marks_record(self):
+        game = lightsaber_mvp.ArcadeGame(
+            enabled=True,
+            round_seconds=1.0,
+            difficulty="normal",
+            seed=7,
+            high_score=100,
+        )
+        game.reset(10.0)
+        game.start(10.0)
+        game.update(13.0, 1280, 720)
+        game.score = 250
+
+        game.update(14.01, 1280, 720)
+
+        self.assertEqual(game.high_score, 250)
+        self.assertTrue(game.new_high_score)
+
     def test_combo_expires_without_followup_hit(self):
         self.start_playing()
         self.game.combo = 3
@@ -228,6 +274,27 @@ class ArcadeGameTest(unittest.TestCase):
         self.assertFalse(self.game.start(20.0))
         self.assertEqual(self.game.state, "free")
 
+
+class HighScoreStoreTest(unittest.TestCase):
+    def test_record_persists_only_best_score(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "scores.json")
+            store = lightsaber_mvp.HighScoreStore(path)
+
+            self.assertEqual(store.load(), {})
+            self.assertEqual(store.record("normal", 500), 500)
+            self.assertEqual(store.record("normal", 300), 500)
+            self.assertEqual(store.load(), {"normal": 500})
+
+    def test_invalid_score_file_is_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "scores.json")
+            with open(path, "w", encoding="utf-8") as score_file:
+                score_file.write("not-json")
+
+            store = lightsaber_mvp.HighScoreStore(path)
+
+            self.assertEqual(store.load(), {})
 
 if __name__ == "__main__":
     unittest.main()

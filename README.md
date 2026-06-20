@@ -12,6 +12,7 @@
 - Arcade mode 提供 3 秒倒數、方向目標、揮劍速度門檻、命中評價、Combo 與回合結算。
 - `easy / normal / hard` difficulty 會調整目標時限、同時目標數、Combo window、揮劍速度與方向容許角度。
 - 敵方雷射會從畫面邊緣射向玩家；以光劍格擋可獲得 Parry 分數，漏接則扣除 Shield。
+- 支援 Pause 與各難度獨立的 persistent high score。
 
 ## 執行環境
 
@@ -62,6 +63,7 @@ python lightsaber_mvp.py --help
 | `--difficulty` | `normal` | Arcade 難度，可選 `easy`、`normal` 或 `hard`。 |
 | `--round-seconds` | `60` | Arcade 回合秒數，必須大於 0。 |
 | `--game-seed` | 無 | 固定目標亂數，供測試與重現 demo 使用。 |
+| `--score-file` | `~/.lightsaber_mvp/scores.json` | High score JSON 儲存位置。 |
 
 ## 操作方式
 
@@ -77,6 +79,7 @@ python lightsaber_mvp.py --help
 | `Space` | 開始 Arcade 回合／重新挑戰 |
 | `G` | 切換 Arcade 與自由揮劍模式 |
 | `R` | 重設目前回合 |
+| `P` | 暫停／繼續；暫停時凍結目標、Combo、回合與雷射計時 |
 | `1` / `2` | 縮短／加長光劍 |
 | `Esc` / `Q` | 結束程式 |
 
@@ -87,7 +90,7 @@ python -m unittest discover -s tests -v
 python -m py_compile lightsaber_mvp.py tests/test_cli_args.py
 ```
 
-目前 automated tests 涵蓋 CLI 驗證、遊戲狀態轉換、目標生命週期、線段命中、揮劍速度與方向門檻、difficulty、計分、Combo、雷射移動、Parry 與 Shield damage。Camera、手勢辨識、畫面與音效仍需以 webcam 進行手動 smoke test。
+目前 automated tests 涵蓋 CLI 驗證、遊戲狀態轉換、Pause、high score persistence、目標生命週期、線段命中、揮劍速度與方向門檻、difficulty、計分、Combo、雷射移動、Parry 與 Shield damage。Camera、手勢辨識、畫面與音效仍需以 webcam 進行手動 smoke test。
 
 ## 專案結構
 
