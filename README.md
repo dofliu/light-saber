@@ -9,7 +9,8 @@
 - 使用 One Euro Filter 降低 landmark 抖動，並在短暫漏偵測時進行 velocity glide。
 - 支援光劍伸縮、光暈、揮動殘影、揮劍音效、光劍交擊火花與碰撞音效。
 - 可透過 CLI 調整 camera、手部數量、視窗尺寸與 MediaPipe 效能參數。
-- Arcade mode 提供 3 秒倒數、限時目標、揮劍速度門檻、命中評價、Combo 與回合結算。
+- Arcade mode 提供 3 秒倒數、方向目標、揮劍速度門檻、命中評價、Combo 與回合結算。
+- `easy / normal / hard` difficulty 會調整目標時限、同時目標數、Combo window、揮劍速度與方向容許角度。
 
 ## 執行環境
 
@@ -37,7 +38,7 @@ python lightsaber_mvp.py
 自訂 camera 與處理參數：
 
 ```powershell
-python lightsaber_mvp.py --camera-index 1 --no-mirror --max-hands 2 --display-size 1280x720 --process-scale 0.75 --model-complexity 1
+python lightsaber_mvp.py --camera-index 1 --no-mirror --max-hands 2 --display-size 1280x720 --process-scale 0.75 --model-complexity 1 --difficulty hard
 ```
 
 查看完整參數：
@@ -57,6 +58,7 @@ python lightsaber_mvp.py --help
 | `--process-scale` | `0.5` | MediaPipe 處理前的影像縮放比例，範圍為 `0 < value <= 1`。 |
 | `--model-complexity` | `0` | MediaPipe Hands 模型複雜度，可選 `0` 或 `1`。 |
 | `--game-mode` | `arcade` | 啟動時使用 `arcade` 或 `free` mode。 |
+| `--difficulty` | `normal` | Arcade 難度，可選 `easy`、`normal` 或 `hard`。 |
 | `--round-seconds` | `60` | Arcade 回合秒數，必須大於 0。 |
 | `--game-seed` | 無 | 固定目標亂數，供測試與重現 demo 使用。 |
 
@@ -66,6 +68,7 @@ python lightsaber_mvp.py --help
 | --- | --- |
 | 握拳 0.5 秒 | 啟動光劍 |
 | 張手 0.3 秒 | 收回光劍 |
+| 朝目標箭頭方向揮劍 | Arcade mode 正確斬擊；反方向不計分 |
 | `F` | 切換 fullscreen |
 | `M` | 切換鏡像 |
 | `D` | 顯示或隱藏 hand landmarks |
@@ -82,7 +85,7 @@ python -m unittest discover -s tests -v
 python -m py_compile lightsaber_mvp.py tests/test_cli_args.py
 ```
 
-目前 automated tests 涵蓋 CLI 驗證、遊戲狀態轉換、目標生命週期、線段命中、揮劍速度門檻、計分與 Combo。Camera、手勢辨識、畫面與音效仍需以 webcam 進行手動 smoke test。
+目前 automated tests 涵蓋 CLI 驗證、遊戲狀態轉換、目標生命週期、線段命中、揮劍速度與方向門檻、difficulty、計分與 Combo。Camera、手勢辨識、畫面與音效仍需以 webcam 進行手動 smoke test。
 
 ## 專案結構
 

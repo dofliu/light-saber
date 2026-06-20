@@ -63,7 +63,10 @@ class ArcadeGameTest(unittest.TestCase):
         start = target.center + np.array([-target.radius * 2, 0.0])
         end = target.center + np.array([target.radius * 2, 0.0])
 
-        hit = self.game.register_blade(start, end, speed=15.0, now=13.2)
+        hit = self.game.register_blade(
+            start, end, speed=15.0, now=13.2,
+            swing_vector=target.direction * 15.0,
+        )
 
         self.assertIsNotNone(hit)
         self.assertGreater(self.game.score, 0)
@@ -77,7 +80,10 @@ class ArcadeGameTest(unittest.TestCase):
         start = target.center + np.array([-target.radius * 2, 0.0])
         end = target.center + np.array([target.radius * 2, 0.0])
 
-        hit = self.game.register_blade(start, end, speed=0.0, now=13.2)
+        hit = self.game.register_blade(
+            start, end, speed=0.0, now=13.2,
+            swing_vector=target.direction,
+        )
 
         self.assertIsNone(hit)
         self.assertEqual(self.game.score, 0)
@@ -91,11 +97,48 @@ class ArcadeGameTest(unittest.TestCase):
         start = second.center + np.array([-second.radius * 2, 0.0])
         end = second.center + np.array([second.radius * 2, 0.0])
 
-        hit = self.game.register_blade(start, end, speed=15.0, now=13.2)
+        hit = self.game.register_blade(
+            start, end, speed=15.0, now=13.2,
+            swing_vector=second.direction * 15.0,
+        )
 
         self.assertIsNotNone(hit)
         self.assertIn(first, self.game.targets)
         self.assertNotIn(second, self.game.targets)
+
+    def test_wrong_swing_direction_does_not_score(self):
+        self.start_playing()
+        target = self.game.targets[0]
+        start = target.center + np.array([-target.radius * 2, 0.0])
+        end = target.center + np.array([target.radius * 2, 0.0])
+
+        hit = self.game.register_blade(
+            start, end, speed=15.0, now=13.2,
+            swing_vector=-target.direction * 15.0,
+        )
+
+        self.assertIsNone(hit)
+        self.assertEqual(self.game.score, 0)
+        self.assertIn(target, self.game.targets)
+        self.assertEqual(self.game.hit_flashes[-1][3], "WRONG WAY")
+
+    def test_hard_difficulty_uses_shorter_target_lifetime(self):
+        hard_game = lightsaber_mvp.ArcadeGame(
+            enabled=True,
+            round_seconds=10.0,
+            difficulty="hard",
+            seed=7,
+        )
+        hard_game.reset(10.0)
+        hard_game.start(10.0)
+        hard_game.update(13.0, 1280, 720)
+
+        target = hard_game.targets[0]
+        self.assertEqual(hard_game.difficulty.name, "hard")
+        self.assertAlmostEqual(
+            target.expires_at - target.spawned_at,
+            lightsaber_mvp.DIFFICULTY_PRESETS["hard"].target_lifetime,
+        )
 
     def test_combo_expires_without_followup_hit(self):
         self.start_playing()

@@ -19,6 +19,7 @@ class CliArgsTest(unittest.TestCase):
         self.assertEqual(args.process_scale, lightsaber_mvp.MP_PROCESS_SCALE)
         self.assertEqual(args.model_complexity, lightsaber_mvp.MP_MODEL_COMPLEXITY)
         self.assertEqual(args.game_mode, "arcade")
+        self.assertEqual(args.difficulty, "normal")
         self.assertEqual(args.round_seconds, lightsaber_mvp.GAME_ROUND_SECONDS)
         self.assertIsNone(args.game_seed)
 
@@ -31,6 +32,7 @@ class CliArgsTest(unittest.TestCase):
             "--process-scale", "0.75",
             "--model-complexity", "1",
             "--game-mode", "free",
+            "--difficulty", "hard",
             "--round-seconds", "90",
             "--game-seed", "42",
         ])
@@ -42,6 +44,7 @@ class CliArgsTest(unittest.TestCase):
         self.assertEqual(args.process_scale, 0.75)
         self.assertEqual(args.model_complexity, 1)
         self.assertEqual(args.game_mode, "free")
+        self.assertEqual(args.difficulty, "hard")
         self.assertEqual(args.round_seconds, 90.0)
         self.assertEqual(args.game_seed, 42)
 
@@ -84,6 +87,11 @@ class CliArgsTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 lightsaber_mvp.parse_args(["--game-mode", "story"])
+
+    def test_difficulty_must_be_known(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                lightsaber_mvp.parse_args(["--difficulty", "impossible"])
 
 
 if __name__ == "__main__":

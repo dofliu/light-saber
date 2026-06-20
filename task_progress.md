@@ -29,3 +29,5 @@
 - 重寫專案 README，新增後續開發 Roadmap。
 - 新增 Arcade mode、限時目標、Score、Combo、命中評價與回合結算。
 - 新增遊戲核心 unit tests，讓 gameplay logic 可脫離 webcam 驗證。
+- 新增方向目標、揮劍方向評分與 `WRONG WAY` 回饋。
+- 新增 `easy / normal / hard` difficulty presets 與相關 tests。

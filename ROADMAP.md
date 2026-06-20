@@ -10,6 +10,8 @@
 - `Ready → Countdown → Playing → Results` 遊戲狀態流程。
 - 限時目標、目標逾時、揮劍速度門檻與線段命中判定。
 - Score、Combo、Best Combo、Hit／Miss 與 `PERFECT / GOOD` 評價。
+- 方向目標、tip velocity directional scoring 與 `WRONG WAY` 回饋。
+- `easy / normal / hard` difficulty presets。
 - 遊戲核心不依賴 webcam，可透過 unit tests 驗證。
 
 ## Phase 1：可靠性與可重現性
@@ -59,8 +61,8 @@
 
 ## 建議下一個 Sprint
 
-1. 建立可重現的音樂節拍 timeline 與節奏目標生成器。
-2. 加入指定揮劍方向與 directional scoring。
-3. 建立雷射彈、格擋與反射機制。
-4. 新增 high score persistence 與 difficulty presets。
+1. 建立雷射彈、格擋與反射機制。
+2. 建立可重現的音樂節拍 timeline 與節奏目標生成器。
+3. 新增 high score persistence 與玩家 profile。
+4. 加入 pause state、難度選單與 calibration 畫面。
 5. 建立 webcam smoke-test checklist 與第一版效能 benchmark。

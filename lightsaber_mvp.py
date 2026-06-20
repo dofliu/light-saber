@@ -110,6 +110,35 @@ GAME_MAX_TARGETS = 3
 GAME_TARGET_RADIUS = 42
 GAME_HIT_MIN_SPEED = 3.0
 
+
+@dataclass(frozen=True)
+class DifficultyPreset:
+    name: str
+    target_lifetime: float
+    combo_window: float
+    max_targets: int
+    min_hit_speed: float
+    direction_threshold: float
+    direction_count: int
+
+
+DIFFICULTY_PRESETS = {
+    "easy": DifficultyPreset("easy", 4.0, 3.0, 2, 2.0, 0.15, 4),
+    "normal": DifficultyPreset("normal", 2.8, 2.2, 3, 3.0, 0.45, 4),
+    "hard": DifficultyPreset("hard", 1.9, 1.5, 4, 5.0, 0.70, 8),
+}
+
+SWING_DIRECTIONS = (
+    ("RIGHT", np.array([1.0, 0.0], dtype=np.float32)),
+    ("DOWN", np.array([0.0, 1.0], dtype=np.float32)),
+    ("LEFT", np.array([-1.0, 0.0], dtype=np.float32)),
+    ("UP", np.array([0.0, -1.0], dtype=np.float32)),
+    ("DOWN-RIGHT", np.array([0.7071, 0.7071], dtype=np.float32)),
+    ("DOWN-LEFT", np.array([-0.7071, 0.7071], dtype=np.float32)),
+    ("UP-LEFT", np.array([-0.7071, -0.7071], dtype=np.float32)),
+    ("UP-RIGHT", np.array([0.7071, -0.7071], dtype=np.float32)),
+)
+
 BLADE_COLORS = [
     (255,  95,  40),
     ( 50,  50, 255),
@@ -300,16 +329,21 @@ class GameTarget:
     center: np.ndarray
     radius: int
     color: tuple
+    direction_name: str
+    direction: np.ndarray
     spawned_at: float
     expires_at: float
+    last_wrong_at: float = -1e9
 
 
 class ArcadeGame:
     """Camera-independent arcade round state and scoring logic."""
 
-    def __init__(self, enabled=True, round_seconds=GAME_ROUND_SECONDS, seed=None):
+    def __init__(self, enabled=True, round_seconds=GAME_ROUND_SECONDS,
+                 difficulty="normal", seed=None):
         self.enabled = enabled
         self.round_seconds = float(round_seconds)
+        self.difficulty = DIFFICULTY_PRESETS[difficulty]
         self.rng = np.random.default_rng(seed)
         self.state = "ready" if enabled else "free"
         self.state_started_at = 0.0
@@ -359,7 +393,7 @@ class ArcadeGame:
                 self.state_started_at = now
         if self.state != "playing":
             return
-        if self.combo > 0 and now - self.last_hit_at > GAME_COMBO_WINDOW:
+        if self.combo > 0 and now - self.last_hit_at > self.difficulty.combo_window:
             self.combo = 0
         if now - self.round_started_at >= self.round_seconds:
             self.state = "results"
@@ -376,7 +410,7 @@ class ArcadeGame:
                 self.combo = 0
         self.targets = active_targets
 
-        desired = min(GAME_MAX_TARGETS, 1 + int(self.elapsed(now) // 15))
+        desired = min(self.difficulty.max_targets, 1 + int(self.elapsed(now) // 15))
         while len(self.targets) < desired:
             self.targets.append(self._spawn_target(now, width, height))
 
@@ -387,29 +421,53 @@ class ArcadeGame:
         bottom = max(top + 1, height - radius - max(60, height // 8))
         left = min(margin_x, max(radius, width - radius - 1))
         right = max(left + 1, width - margin_x)
-        center = np.array([
-            self.rng.integers(left, right),
-            self.rng.integers(top, bottom),
-        ], dtype=np.float32)
+        center = None
+        for _ in range(12):
+            candidate = np.array([
+                self.rng.integers(left, right),
+                self.rng.integers(top, bottom),
+            ], dtype=np.float32)
+            if all(np.linalg.norm(candidate - item.center) > radius * 2.5
+                   for item in self.targets):
+                center = candidate
+                break
+        if center is None:
+            center = candidate
+        direction_index = int(self.rng.integers(0, self.difficulty.direction_count))
+        direction_name, direction = SWING_DIRECTIONS[direction_index]
         target = GameTarget(
             target_id=self._next_target_id,
             center=center,
             radius=radius,
             color=BLADE_COLORS[(self._next_target_id - 1) % len(BLADE_COLORS)],
+            direction_name=direction_name,
+            direction=direction.copy(),
             spawned_at=now,
-            expires_at=now + GAME_TARGET_LIFETIME,
+            expires_at=now + self.difficulty.target_lifetime,
         )
         self._next_target_id += 1
         return target
 
-    def register_blade(self, start, end, speed, now):
-        if self.state != "playing" or speed < GAME_HIT_MIN_SPEED:
+    def register_blade(self, start, end, speed, now, swing_vector):
+        if self.state != "playing" or speed < self.difficulty.min_hit_speed:
             return None
+        swing_vector = np.asarray(swing_vector, dtype=np.float32)
+        swing_length = float(np.linalg.norm(swing_vector))
+        if swing_length <= 1e-6:
+            return None
+        swing_direction = swing_vector / swing_length
         for target in list(self.targets):
             accuracy = segment_circle_hit(start, end, target.center, target.radius)
             if accuracy is None:
                 continue
-            if now - self.last_hit_at <= GAME_COMBO_WINDOW:
+            direction_score = float(np.dot(swing_direction, target.direction))
+            if direction_score < self.difficulty.direction_threshold:
+                if now - target.last_wrong_at > 0.35:
+                    target.last_wrong_at = now
+                    self.hit_flashes.append(
+                        (target.center.copy(), now, 0, "WRONG WAY"))
+                return None
+            if now - self.last_hit_at <= self.difficulty.combo_window:
                 self.combo += 1
             else:
                 self.combo = 1
@@ -418,9 +476,14 @@ class ArcadeGame:
             self.hits += 1
             speed_bonus = min(100, int(max(0.0, speed - SWING_THRESHOLD_NORM) * 5))
             accuracy_bonus = int(accuracy * 100)
+            direction_bonus = int(max(0.0, direction_score) * 100)
             combo_multiplier = 1.0 + min(2.0, (self.combo - 1) * 0.1)
-            gained = int((100 + speed_bonus + accuracy_bonus) * combo_multiplier)
-            quality = "PERFECT" if accuracy >= 0.72 and speed >= 10.0 else "GOOD"
+            gained = int(
+                (100 + speed_bonus + accuracy_bonus + direction_bonus)
+                * combo_multiplier)
+            quality = "PERFECT" if (
+                accuracy >= 0.72 and direction_score >= 0.85 and speed >= 10.0
+            ) else "GOOD"
             self.score += gained
             self.targets.remove(target)
             self.hit_flashes.append((target.center.copy(), now, gained, quality))
@@ -640,7 +703,7 @@ def draw_arcade_targets(frame, game, now):
         center = to_pt(target.center)
         remaining_ratio = max(0.0, min(
             1.0,
-            (target.expires_at - now) / GAME_TARGET_LIFETIME,
+            (target.expires_at - now) / game.difficulty.target_lifetime,
         ))
         pulse = 1.0 + 0.08 * math.sin(now * 9.0 + target.target_id)
         radius = max(4, int(target.radius * pulse))
@@ -652,6 +715,11 @@ def draw_arcade_targets(frame, game, now):
         cv2.ellipse(frame, center, (radius + 8, radius + 8), -90,
                     0, int(360 * remaining_ratio),
                     (255, 255, 255), 4, cv2.LINE_AA)
+        arrow_half = target.direction * (radius * 0.72)
+        arrow_start = to_pt(target.center - arrow_half)
+        arrow_end = to_pt(target.center + arrow_half)
+        cv2.arrowedLine(frame, arrow_start, arrow_end, (255, 255, 255),
+                        4, cv2.LINE_AA, tipLength=0.32)
 
 
 def draw_arcade_ui(frame, game, now):
@@ -666,6 +734,8 @@ def draw_arcade_ui(frame, game, now):
         combo_color = (80, 255, 255) if game.combo >= 5 else (220, 220, 220)
         cv2.putText(frame, f"COMBO x{game.combo}", (14, 73),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.72, combo_color, 2, cv2.LINE_AA)
+        cv2.putText(frame, game.difficulty.name.upper(), (14, 103),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (170, 170, 170), 1, cv2.LINE_AA)
         remaining_text = f"TIME {game.remaining(now):04.1f}"
         (text_width, _), _ = cv2.getTextSize(
             remaining_text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
@@ -860,6 +930,8 @@ class HandSlot:
         self.prev_tip_t = 0.0
         self.tip_speed_norm = 0.0
         self.tip_speed_smooth = 0.0
+        self.tip_velocity_norm = np.zeros(2, dtype=np.float32)
+        self.tip_velocity_smooth = np.zeros(2, dtype=np.float32)
         self.evt_ignite = False
         self.evt_retract = False
 
@@ -967,6 +1039,8 @@ def step_slot(slot, det, now, dt):
         slot.prev_tip = None
         slot.tip_speed_norm = 0.0
         slot.tip_speed_smooth = 0.0
+        slot.tip_velocity_norm[:] = 0.0
+        slot.tip_velocity_smooth[:] = 0.0
 
     if (now - slot.last_seen > SLOT_TIMEOUT
             and slot.blade_progress <= 0.001
@@ -988,8 +1062,12 @@ def update_tip_speed(slot, tip_pos, now):
         dt_t = max(1e-3, now - slot.prev_tip_t)
         d = float(np.linalg.norm(tip_pos - slot.prev_tip))
         slot.tip_speed_norm = (d / slot.base_f) / dt_t
+        slot.tip_velocity_norm = ((tip_pos - slot.prev_tip) / slot.base_f) / dt_t
         slot.tip_speed_smooth = (slot.tip_speed_smooth * (1 - TIP_SPEED_EMA)
                                  + slot.tip_speed_norm * TIP_SPEED_EMA)
+        slot.tip_velocity_smooth = (
+            slot.tip_velocity_smooth * (1 - TIP_SPEED_EMA)
+            + slot.tip_velocity_norm * TIP_SPEED_EMA)
     slot.prev_tip = tip_pos.copy()
     slot.prev_tip_t = now
 
@@ -1068,6 +1146,11 @@ def parse_args(argv=None):
         default="arcade",
         help="Start in arcade or free-play mode (default: %(default)s).")
     parser.add_argument(
+        "--difficulty",
+        choices=tuple(DIFFICULTY_PRESETS),
+        default="normal",
+        help="Arcade difficulty preset (default: %(default)s).")
+    parser.add_argument(
         "--round-seconds",
         type=positive_float,
         default=GAME_ROUND_SECONDS,
@@ -1124,6 +1207,7 @@ def main():
     game = ArcadeGame(
         enabled=args.game_mode == "arcade",
         round_seconds=args.round_seconds,
+        difficulty=args.difficulty,
         seed=args.game_seed,
     )
     game.reset(time.time())
@@ -1226,7 +1310,8 @@ def main():
                 else:
                     fully_ignited.append((emitter, end, slot.idx))
                     hit = game.register_blade(
-                        emitter, end, slot.tip_speed_smooth, now)
+                        emitter, end, slot.tip_speed_smooth, now,
+                        slot.tip_velocity_smooth)
                     if hit is not None:
                         target_hits.append(hit[0])
 
