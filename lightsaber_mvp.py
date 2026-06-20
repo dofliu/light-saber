@@ -112,6 +112,7 @@ GAME_TARGET_RADIUS = 42
 GAME_HIT_MIN_SPEED = 3.0
 GAME_STARTING_LIVES = 3
 GAME_LASER_RADIUS = 16
+RHYTHM_LEAD_SECONDS = 1.25
 DEFAULT_SCORE_FILE = os.path.join(
     os.path.expanduser("~"), ".lightsaber_mvp", "scores.json")
 
@@ -127,12 +128,17 @@ class DifficultyPreset:
     direction_count: int
     laser_interval: float
     laser_speed: float
+    rhythm_window: float
+    rhythm_stride: int
 
 
 DIFFICULTY_PRESETS = {
-    "easy": DifficultyPreset("easy", 4.0, 3.0, 2, 2.0, 0.15, 4, 5.5, 150.0),
-    "normal": DifficultyPreset("normal", 2.8, 2.2, 3, 3.0, 0.45, 4, 3.8, 210.0),
-    "hard": DifficultyPreset("hard", 1.9, 1.5, 4, 5.0, 0.70, 8, 2.4, 285.0),
+    "easy": DifficultyPreset(
+        "easy", 4.0, 3.0, 2, 2.0, 0.15, 4, 5.5, 150.0, 0.55, 2),
+    "normal": DifficultyPreset(
+        "normal", 2.8, 2.2, 3, 3.0, 0.45, 4, 3.8, 210.0, 0.38, 2),
+    "hard": DifficultyPreset(
+        "hard", 1.9, 1.5, 4, 5.0, 0.70, 8, 2.4, 285.0, 0.25, 1),
 }
 
 SWING_DIRECTIONS = (
@@ -161,7 +167,11 @@ class HighScoreStore:
             return {}
         scores = {}
         for difficulty, score in data.items():
-            if difficulty in DIFFICULTY_PRESETS and isinstance(score, int) and score >= 0:
+            valid_key = difficulty in DIFFICULTY_PRESETS or any(
+                difficulty == f"{mode}:{level}"
+                for mode in ("arcade", "rhythm")
+                for level in DIFFICULTY_PRESETS)
+            if valid_key and isinstance(score, int) and score >= 0:
                 scores[difficulty] = score
         return scores
 
@@ -373,6 +383,7 @@ class GameTarget:
     direction: np.ndarray
     spawned_at: float
     expires_at: float
+    beat_at: float = 0.0
     last_wrong_at: float = -1e9
 
 
@@ -389,14 +400,66 @@ class LaserBolt:
     danger_at: float
 
 
+class BeatTimeline:
+    def __init__(self, bpm, stride=1):
+        self.bpm = float(bpm)
+        self.stride = int(stride)
+        self.base_interval = 60.0 / self.bpm
+        self.interval = self.base_interval * self.stride
+        self.lead_time = math.ceil(
+            RHYTHM_LEAD_SECONDS / self.base_interval) * self.base_interval
+        self.started_at = 0.0
+        self.next_beat_at = 0.0
+        self.beat_index = 0
+        self.last_emitted_beat = -1
+
+    def start(self, now):
+        self.started_at = now + self.lead_time
+        self.next_beat_at = self.started_at
+        self.beat_index = 0
+        self.last_emitted_beat = -1
+
+    def pop_due(self, now, horizon):
+        beats = []
+        while self.next_beat_at > 0.0 and self.next_beat_at <= now + horizon:
+            beats.append((self.beat_index, self.next_beat_at))
+            self.beat_index += 1
+            self.next_beat_at += self.interval
+        return beats
+
+    def shift(self, duration):
+        self.started_at += duration
+        self.next_beat_at += duration
+
+    def pulse(self, now):
+        if self.started_at <= 0.0 or now < self.started_at:
+            return 0.0
+        phase = ((now - self.started_at) % self.base_interval) / self.base_interval
+        return max(0.0, 1.0 - phase * 4.0)
+
+    def consume_beat(self, now):
+        if self.started_at <= 0.0 or now < self.started_at:
+            return False
+        beat_number = int((now - self.started_at) // self.base_interval)
+        if beat_number <= self.last_emitted_beat:
+            return False
+        self.last_emitted_beat = beat_number
+        return True
+
+
 class ArcadeGame:
     """Camera-independent arcade round state and scoring logic."""
 
     def __init__(self, enabled=True, round_seconds=GAME_ROUND_SECONDS,
-                 difficulty="normal", seed=None, high_score=0):
+                 difficulty="normal", seed=None, high_score=0,
+                 target_mode="arcade", rhythm_bpm=120.0):
         self.enabled = enabled
         self.round_seconds = float(round_seconds)
         self.difficulty = DIFFICULTY_PRESETS[difficulty]
+        self.target_mode = target_mode
+        self.rhythm_bpm = float(rhythm_bpm)
+        self.timeline = BeatTimeline(
+            self.rhythm_bpm, self.difficulty.rhythm_stride)
         self.rng = np.random.default_rng(seed)
         self.state = "ready" if enabled else "free"
         self.state_started_at = 0.0
@@ -405,9 +468,6 @@ class ArcadeGame:
         self.high_score = int(high_score)
         self.new_high_score = False
         self.round_started_at = 0.0
-        self.result_reason = ""
-        self.paused_at = 0.0
-        self.new_high_score = False
         self.score = 0
         self.combo = 0
         self.best_combo = 0
@@ -422,6 +482,7 @@ class ArcadeGame:
         self._next_target_id = 1
         self._next_bolt_id = 1
         self.next_laser_at = 1e9
+        self.evt_beat = False
 
     def set_enabled(self, enabled, now):
         self.enabled = enabled
@@ -431,6 +492,9 @@ class ArcadeGame:
         self.state = "ready" if self.enabled else "free"
         self.state_started_at = now
         self.round_started_at = 0.0
+        self.result_reason = ""
+        self.paused_at = 0.0
+        self.new_high_score = False
         self.score = 0
         self.combo = 0
         self.best_combo = 0
@@ -443,6 +507,8 @@ class ArcadeGame:
         self.laser_bolts.clear()
         self.hit_flashes.clear()
         self.next_laser_at = 1e9
+        self.evt_beat = False
+        self.timeline.start(0.0)
 
     def start(self, now):
         if not self.enabled or self.state not in ("ready", "results"):
@@ -465,9 +531,12 @@ class ArcadeGame:
         self.state_started_at += paused_duration
         self.last_hit_at += paused_duration
         self.next_laser_at += paused_duration
+        self.timeline.shift(paused_duration)
         for target in self.targets:
             target.spawned_at += paused_duration
             target.expires_at += paused_duration
+            if target.beat_at > 0.0:
+                target.beat_at += paused_duration
             target.last_wrong_at += paused_duration
         for bolt in self.laser_bolts:
             bolt.spawned_at += paused_duration
@@ -486,6 +555,7 @@ class ArcadeGame:
             self.new_high_score = True
 
     def update(self, now, width, height):
+        self.evt_beat = False
         if not self.enabled:
             return
         if self.state == "countdown":
@@ -494,8 +564,12 @@ class ArcadeGame:
                 self.round_started_at = now
                 self.state_started_at = now
                 self.next_laser_at = now + self.difficulty.laser_interval
+                if self.target_mode == "rhythm":
+                    self.timeline.start(now)
         if self.state != "playing":
             return
+        if self.target_mode == "rhythm":
+            self.evt_beat = self.timeline.consume_beat(now)
         if self.combo > 0 and now - self.last_hit_at > self.difficulty.combo_window:
             self.combo = 0
         if now - self.round_started_at >= self.round_seconds:
@@ -532,11 +606,19 @@ class ArcadeGame:
                 self.combo = 0
         self.targets = active_targets
 
-        desired = min(self.difficulty.max_targets, 1 + int(self.elapsed(now) // 15))
-        while len(self.targets) < desired:
-            self.targets.append(self._spawn_target(now, width, height))
+        if self.target_mode == "rhythm":
+            round_end = self.round_started_at + self.round_seconds
+            for _, beat_at in self.timeline.pop_due(now, self.timeline.lead_time):
+                if beat_at <= round_end:
+                    self.targets.append(
+                        self._spawn_target(now, width, height, beat_at))
+        else:
+            desired = min(
+                self.difficulty.max_targets, 1 + int(self.elapsed(now) // 15))
+            while len(self.targets) < desired:
+                self.targets.append(self._spawn_target(now, width, height))
 
-    def _spawn_target(self, now, width, height):
+    def _spawn_target(self, now, width, height, beat_at=0.0):
         radius = max(26, min(GAME_TARGET_RADIUS, min(width, height) // 10))
         margin_x = radius + max(20, width // 12)
         top = radius + max(70, height // 10)
@@ -557,6 +639,10 @@ class ArcadeGame:
             center = candidate
         direction_index = int(self.rng.integers(0, self.difficulty.direction_count))
         direction_name, direction = SWING_DIRECTIONS[direction_index]
+        expires_at = (
+            beat_at + self.difficulty.rhythm_window
+            if beat_at > 0.0
+            else now + self.difficulty.target_lifetime)
         target = GameTarget(
             target_id=self._next_target_id,
             center=center,
@@ -565,7 +651,8 @@ class ArcadeGame:
             direction_name=direction_name,
             direction=direction.copy(),
             spawned_at=now,
-            expires_at=now + self.difficulty.target_lifetime,
+            expires_at=expires_at,
+            beat_at=beat_at,
         )
         self._next_target_id += 1
         return target
@@ -621,6 +708,18 @@ class ArcadeGame:
                     self.hit_flashes.append(
                         (target.center.copy(), now, 0, "WRONG WAY"))
                 return None
+            timing_score = 1.0
+            if target.beat_at > 0.0:
+                timing_error = abs(now - target.beat_at)
+                if timing_error > self.difficulty.rhythm_window:
+                    if now - target.last_wrong_at > 0.35:
+                        target.last_wrong_at = now
+                        timing_label = "TOO EARLY" if now < target.beat_at else "TOO LATE"
+                        self.hit_flashes.append(
+                            (target.center.copy(), now, 0, timing_label))
+                    return None
+                timing_score = max(
+                    0.0, 1.0 - timing_error / self.difficulty.rhythm_window)
             if now - self.last_hit_at <= self.difficulty.combo_window:
                 self.combo += 1
             else:
@@ -631,13 +730,18 @@ class ArcadeGame:
             speed_bonus = min(100, int(max(0.0, speed - SWING_THRESHOLD_NORM) * 5))
             accuracy_bonus = int(accuracy * 100)
             direction_bonus = int(max(0.0, direction_score) * 100)
+            timing_bonus = int(timing_score * 150) if target.beat_at > 0.0 else 0
             combo_multiplier = 1.0 + min(2.0, (self.combo - 1) * 0.1)
             gained = int(
-                (100 + speed_bonus + accuracy_bonus + direction_bonus)
+                (100 + speed_bonus + accuracy_bonus + direction_bonus + timing_bonus)
                 * combo_multiplier)
-            quality = "PERFECT" if (
-                accuracy >= 0.72 and direction_score >= 0.85 and speed >= 10.0
-            ) else "GOOD"
+            if (accuracy >= 0.72 and direction_score >= 0.85
+                    and speed >= 10.0 and timing_score >= 0.78):
+                quality = "PERFECT"
+            elif target.beat_at > 0.0 and timing_score >= 0.5:
+                quality = "GREAT"
+            else:
+                quality = "GOOD"
             self.score += gained
             self.targets.remove(target)
             self.hit_flashes.append((target.center.copy(), now, gained, quality))
@@ -877,9 +981,10 @@ def draw_arcade_targets(frame, game, now):
     now = game.effective_now(now)
     for target in game.targets:
         center = to_pt(target.center)
+        target_lifetime = max(1e-3, target.expires_at - target.spawned_at)
         remaining_ratio = max(0.0, min(
             1.0,
-            (target.expires_at - now) / game.difficulty.target_lifetime,
+            (target.expires_at - now) / target_lifetime,
         ))
         pulse = 1.0 + 0.08 * math.sin(now * 9.0 + target.target_id)
         radius = max(4, int(target.radius * pulse))
@@ -891,6 +996,12 @@ def draw_arcade_targets(frame, game, now):
         cv2.ellipse(frame, center, (radius + 8, radius + 8), -90,
                     0, int(360 * remaining_ratio),
                     (255, 255, 255), 4, cv2.LINE_AA)
+        if target.beat_at > 0.0:
+            approach = max(0.0, min(
+                1.0, (target.beat_at - now) / game.timeline.lead_time))
+            approach_radius = radius + int(approach * 72)
+            beat_color = (80, 255, 255) if now <= target.beat_at else (80, 160, 255)
+            cv2.circle(frame, center, approach_radius, beat_color, 3, cv2.LINE_AA)
         arrow_half = target.direction * (radius * 0.72)
         arrow_start = to_pt(target.center - arrow_half)
         arrow_end = to_pt(target.center + arrow_half)
@@ -929,7 +1040,10 @@ def draw_arcade_ui(frame, game, now):
         combo_color = (80, 255, 255) if game.combo >= 5 else (220, 220, 220)
         cv2.putText(frame, f"COMBO x{game.combo}", (14, 73),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.72, combo_color, 2, cv2.LINE_AA)
-        cv2.putText(frame, game.difficulty.name.upper(), (14, 103),
+        mode_label = game.difficulty.name.upper()
+        if game.target_mode == "rhythm":
+            mode_label += f"  RHYTHM {game.rhythm_bpm:g} BPM"
+        cv2.putText(frame, mode_label, (14, 103),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (170, 170, 170), 1, cv2.LINE_AA)
         lives_color = (80, 255, 80) if game.lives > 1 else (60, 60, 255)
         cv2.putText(frame, f"SHIELD {game.lives}", (14, 132),
@@ -941,6 +1055,11 @@ def draw_arcade_ui(frame, game, now):
                     (frame.shape[1] - high_width - 14, 70),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (170, 170, 170), 1,
                     cv2.LINE_AA)
+        if game.target_mode == "rhythm" and game.state == "playing":
+            beat_pulse = game.timeline.pulse(now)
+            beat_radius = 8 + int(beat_pulse * 10)
+            cv2.circle(frame, (frame.shape[1] // 2, 28), beat_radius,
+                       (80, 255, 255), -1, cv2.LINE_AA)
         if game.state == "paused":
             overlay = frame.copy()
             cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]),
@@ -956,7 +1075,10 @@ def draw_arcade_ui(frame, game, now):
         cv2.putText(frame, remaining_text, (frame.shape[1] - text_width - 14, 38),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
     elif game.state == "ready":
-        _draw_centered_text(frame, "LIGHTSABER ARCADE", frame.shape[0] // 2 - 30,
+        ready_title = (
+            "LIGHTSABER RHYTHM"
+            if game.target_mode == "rhythm" else "LIGHTSABER ARCADE")
+        _draw_centered_text(frame, ready_title, frame.shape[0] // 2 - 30,
                             1.15, (80, 255, 255), 3)
         _draw_centered_text(frame, "SPACE: start  |  G: free play",
                             frame.shape[0] // 2 + 25, 0.7, (255, 255, 255), 2)
@@ -1065,6 +1187,15 @@ def _synth_clash(duration=0.40):
     return (noise + main + res + sub) * env
 
 
+def _synth_beat(duration=0.08):
+    sample_count = int(SAMPLE_RATE * duration)
+    timeline = np.linspace(0, duration, sample_count, endpoint=False)
+    envelope = np.exp(-timeline * 42.0)
+    tone = np.sin(2 * np.pi * 1100 * timeline)
+    accent = np.sin(2 * np.pi * 2200 * timeline) * 0.25
+    return (tone + accent) * envelope * 0.45
+
+
 class Audio:
     def __init__(self):
         self.ok = False
@@ -1079,9 +1210,11 @@ class Audio:
             self.s_retract = self._mk(_synth_retract())
             self.s_swing = self._mk(_synth_swing())
             self.s_clash = self._mk(_synth_clash())
+            self.s_beat = self._mk(_synth_beat())
             self.ch_oneshot = pygame.mixer.Channel(0)
             self.ch_swing = pygame.mixer.Channel(1)
             self.ch_clash = pygame.mixer.Channel(2)
+            self.ch_beat = pygame.mixer.Channel(3)
             self.ok = True
             print("[Audio] ok")
         except Exception as e:
@@ -1118,6 +1251,10 @@ class Audio:
         self.ch_swing.play(self.s_swing)
         self.ch_swing.set_volume(min(1.0, max(0.25, intensity)))
         self._last_swing_t[slot_idx] = now
+
+    def play_beat(self):
+        if self.ok:
+            self.ch_beat.play(self.s_beat)
 
 
 # -------- Hand slot tracker (v6: filtered + glide) --------
@@ -1373,6 +1510,16 @@ def parse_args(argv=None):
         default="normal",
         help="Arcade difficulty preset (default: %(default)s).")
     parser.add_argument(
+        "--target-mode",
+        choices=("arcade", "rhythm"),
+        default="arcade",
+        help="Use continuous arcade targets or BPM rhythm targets.")
+    parser.add_argument(
+        "--rhythm-bpm",
+        type=positive_float,
+        default=120.0,
+        help="Rhythm target tempo in beats per minute (default: %(default)s).")
+    parser.add_argument(
         "--round-seconds",
         type=positive_float,
         default=GAME_ROUND_SECONDS,
@@ -1432,12 +1579,16 @@ def main():
     slots = [HandSlot(i) for i in range(args.max_hands)]
     score_store = HighScoreStore(args.score_file)
     stored_scores = score_store.load()
+    score_key = f"{args.target_mode}:{args.difficulty}"
     game = ArcadeGame(
         enabled=args.game_mode == "arcade",
         round_seconds=args.round_seconds,
         difficulty=args.difficulty,
         seed=args.game_seed,
-        high_score=stored_scores.get(args.difficulty, 0),
+        high_score=stored_scores.get(
+            score_key, stored_scores.get(args.difficulty, 0)),
+        target_mode=args.target_mode,
+        rhythm_bpm=args.rhythm_bpm,
     )
     game.reset(time.time())
     last_t = time.time()
@@ -1460,9 +1611,11 @@ def main():
         last_t = now
         previous_game_state = game.state
         game.update(now, w, h)
+        if game.evt_beat:
+            audio.play_beat()
         if previous_game_state != "results" and game.state == "results":
             try:
-                score_store.record(args.difficulty, game.score)
+                score_store.record(score_key, game.score)
             except OSError as error:
                 print(f"[Score] cannot save high score: {error}")
 

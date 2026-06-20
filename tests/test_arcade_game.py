@@ -29,6 +29,36 @@ class SegmentCircleHitTest(unittest.TestCase):
         self.assertIsNone(accuracy)
 
 
+class BeatTimelineTest(unittest.TestCase):
+    def test_timeline_emits_deterministic_beats(self):
+        timeline = lightsaber_mvp.BeatTimeline(bpm=120.0, stride=2)
+        timeline.start(10.0)
+
+        first = timeline.pop_due(10.0, timeline.lead_time)
+        second = timeline.pop_due(11.0, timeline.lead_time)
+
+        self.assertEqual(first, [(0, 11.5)])
+        self.assertEqual(second, [(1, 12.5)])
+
+    def test_shift_preserves_beat_spacing(self):
+        timeline = lightsaber_mvp.BeatTimeline(bpm=120.0, stride=1)
+        timeline.start(10.0)
+        timeline.shift(5.0)
+
+        beats = timeline.pop_due(15.0, timeline.lead_time)
+
+        self.assertEqual(beats, [(0, 16.5)])
+
+    def test_each_metronome_beat_is_consumed_once(self):
+        timeline = lightsaber_mvp.BeatTimeline(bpm=120.0, stride=2)
+        timeline.start(10.0)
+
+        self.assertFalse(timeline.consume_beat(11.49))
+        self.assertTrue(timeline.consume_beat(11.5))
+        self.assertFalse(timeline.consume_beat(11.6))
+        self.assertTrue(timeline.consume_beat(12.0))
+
+
 class ArcadeGameTest(unittest.TestCase):
     def setUp(self):
         self.game = lightsaber_mvp.ArcadeGame(
@@ -237,6 +267,11 @@ class ArcadeGameTest(unittest.TestCase):
         self.assertEqual(game.high_score, 250)
         self.assertTrue(game.new_high_score)
 
+        game.reset(20.0)
+
+        self.assertFalse(game.new_high_score)
+        self.assertEqual(game.result_reason, "")
+
     def test_combo_expires_without_followup_hit(self):
         self.start_playing()
         self.game.combo = 3
@@ -286,6 +321,19 @@ class HighScoreStoreTest(unittest.TestCase):
             self.assertEqual(store.record("normal", 300), 500)
             self.assertEqual(store.load(), {"normal": 500})
 
+    def test_modes_keep_separate_high_scores(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "scores.json")
+            store = lightsaber_mvp.HighScoreStore(path)
+
+            store.record("arcade:normal", 700)
+            store.record("rhythm:normal", 900)
+
+            self.assertEqual(store.load(), {
+                "arcade:normal": 700,
+                "rhythm:normal": 900,
+            })
+
     def test_invalid_score_file_is_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "scores.json")
@@ -295,6 +343,51 @@ class HighScoreStoreTest(unittest.TestCase):
             store = lightsaber_mvp.HighScoreStore(path)
 
             self.assertEqual(store.load(), {})
+
+
+class RhythmGameTest(unittest.TestCase):
+    def setUp(self):
+        self.game = lightsaber_mvp.ArcadeGame(
+            enabled=True,
+            round_seconds=10.0,
+            difficulty="normal",
+            seed=11,
+            target_mode="rhythm",
+            rhythm_bpm=120.0,
+        )
+        self.game.reset(10.0)
+        self.game.start(10.0)
+        self.game.update(13.0, 1280, 720)
+        self.target = self.game.targets[0]
+        self.start = self.target.center + np.array([-self.target.radius * 2, 0.0])
+        self.end = self.target.center + np.array([self.target.radius * 2, 0.0])
+
+    def test_rhythm_target_has_future_beat(self):
+        self.assertGreater(self.target.beat_at, self.target.spawned_at)
+        self.assertAlmostEqual(
+            self.target.expires_at,
+            self.target.beat_at + self.game.difficulty.rhythm_window,
+        )
+
+    def test_early_rhythm_hit_does_not_score(self):
+        hit = self.game.register_blade(
+            self.start, self.end, speed=15.0, now=13.0,
+            swing_vector=self.target.direction * 15.0,
+        )
+
+        self.assertIsNone(hit)
+        self.assertEqual(self.game.score, 0)
+        self.assertEqual(self.game.hit_flashes[-1][3], "TOO EARLY")
+
+    def test_on_beat_rhythm_hit_scores(self):
+        hit = self.game.register_blade(
+            self.start, self.end, speed=15.0, now=self.target.beat_at,
+            swing_vector=self.target.direction * 15.0,
+        )
+
+        self.assertIsNotNone(hit)
+        self.assertGreaterEqual(self.game.score, 450)
+        self.assertEqual(self.game.hit_flashes[-1][3], "PERFECT")
 
 if __name__ == "__main__":
     unittest.main()

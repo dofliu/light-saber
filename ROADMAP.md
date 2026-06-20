@@ -14,6 +14,7 @@
 - `easy / normal / hard` difficulty presets。
 - 敵方雷射、光劍 Parry、Shield lives 與生命歸零結算。
 - Pause time freeze 與各難度 persistent high score。
+- BPM BeatTimeline、Rhythm targets、metronome 與 timing score。
 - 遊戲核心不依賴 webcam，可透過 unit tests 驗證。
 
 ## Phase 1：可靠性與可重現性
@@ -63,7 +64,7 @@
 
 ## 建議下一個 Sprint
 
-1. 建立可重現的音樂節拍 timeline 與節奏目標生成器。
+1. 支援外部音樂、beat-map JSON 與節拍編輯流程。
 2. 新增玩家 profile 與排行榜畫面。
 3. 加入難度選單與 calibration 畫面。
 4. 增加敵人／Boss attack patterns 與雷射預警動畫。
