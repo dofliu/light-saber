@@ -4,6 +4,14 @@
 
 將目前可運作的單檔 MVP，逐步整理為可測試、可調校、可展示及可延伸研究的即時互動系統。各階段依相依性排序，完成前一階段後再進入下一階段。
 
+## 已完成的遊戲化基礎
+
+- Arcade／自由揮劍 mode 與 runtime 切換。
+- `Ready → Countdown → Playing → Results` 遊戲狀態流程。
+- 限時目標、目標逾時、揮劍速度門檻與線段命中判定。
+- Score、Combo、Best Combo、Hit／Miss 與 `PERFECT / GOOD` 評價。
+- 遊戲核心不依賴 webcam，可透過 unit tests 驗證。
+
 ## Phase 1：可靠性與可重現性
 
 - 將 `min_detection_confidence` 與 `min_tracking_confidence` 加入 CLI，並補齊範圍驗證 tests。
@@ -51,8 +59,8 @@
 
 ## 建議下一個 Sprint
 
-1. 新增 detection/tracking confidence CLI 與 tests。
-2. 建立 webcam smoke-test checklist。
-3. 拆出 config 與 gesture state transition。
-4. 為 state transition 補 unit tests。
-5. 建立第一版 FPS／inference-time benchmark。
+1. 建立可重現的音樂節拍 timeline 與節奏目標生成器。
+2. 加入指定揮劍方向與 directional scoring。
+3. 建立雷射彈、格擋與反射機制。
+4. 新增 high score persistence 與 difficulty presets。
+5. 建立 webcam smoke-test checklist 與第一版效能 benchmark。

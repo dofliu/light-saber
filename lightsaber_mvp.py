@@ -33,6 +33,7 @@ import math
 import os
 import time
 from collections import deque
+from dataclasses import dataclass
 
 import cv2
 import mediapipe as mp
@@ -100,6 +101,14 @@ SWING_COOLDOWN = 0.16
 TIP_SPEED_EMA = 0.5
 
 SAMPLE_RATE = 22050
+
+GAME_ROUND_SECONDS = 60.0
+GAME_COUNTDOWN_SECONDS = 3.0
+GAME_TARGET_LIFETIME = 2.8
+GAME_COMBO_WINDOW = 2.2
+GAME_MAX_TARGETS = 3
+GAME_TARGET_RADIUS = 42
+GAME_HIT_MIN_SPEED = 3.0
 
 BLADE_COLORS = [
     (255,  95,  40),
@@ -264,6 +273,167 @@ def segments_intersect(p1, p2, p3, p4):
     if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
         return int(x1 + t * (x2 - x1)), int(y1 + t * (y2 - y1))
     return None
+
+
+def segment_circle_hit(start, end, center, radius):
+    """Return normalized hit accuracy, or None when the segment misses."""
+    start = np.asarray(start, dtype=np.float32)
+    end = np.asarray(end, dtype=np.float32)
+    center = np.asarray(center, dtype=np.float32)
+    segment = end - start
+    length_sq = float(np.dot(segment, segment))
+    if length_sq <= 1e-6:
+        closest = start
+    else:
+        projection = float(np.dot(center - start, segment) / length_sq)
+        projection = max(0.0, min(1.0, projection))
+        closest = start + segment * projection
+    distance = float(np.linalg.norm(center - closest))
+    if distance > radius:
+        return None
+    return max(0.0, 1.0 - distance / max(1.0, radius))
+
+
+@dataclass(eq=False)
+class GameTarget:
+    target_id: int
+    center: np.ndarray
+    radius: int
+    color: tuple
+    spawned_at: float
+    expires_at: float
+
+
+class ArcadeGame:
+    """Camera-independent arcade round state and scoring logic."""
+
+    def __init__(self, enabled=True, round_seconds=GAME_ROUND_SECONDS, seed=None):
+        self.enabled = enabled
+        self.round_seconds = float(round_seconds)
+        self.rng = np.random.default_rng(seed)
+        self.state = "ready" if enabled else "free"
+        self.state_started_at = 0.0
+        self.round_started_at = 0.0
+        self.score = 0
+        self.combo = 0
+        self.best_combo = 0
+        self.hits = 0
+        self.misses = 0
+        self.last_hit_at = -1e9
+        self.targets = []
+        self.hit_flashes = deque(maxlen=12)
+        self._next_target_id = 1
+
+    def set_enabled(self, enabled, now):
+        self.enabled = enabled
+        self.reset(now)
+
+    def reset(self, now):
+        self.state = "ready" if self.enabled else "free"
+        self.state_started_at = now
+        self.round_started_at = 0.0
+        self.score = 0
+        self.combo = 0
+        self.best_combo = 0
+        self.hits = 0
+        self.misses = 0
+        self.last_hit_at = -1e9
+        self.targets.clear()
+        self.hit_flashes.clear()
+
+    def start(self, now):
+        if not self.enabled or self.state not in ("ready", "results"):
+            return False
+        self.reset(now)
+        self.state = "countdown"
+        self.state_started_at = now
+        return True
+
+    def update(self, now, width, height):
+        if not self.enabled:
+            return
+        if self.state == "countdown":
+            if now - self.state_started_at >= GAME_COUNTDOWN_SECONDS:
+                self.state = "playing"
+                self.round_started_at = now
+                self.state_started_at = now
+        if self.state != "playing":
+            return
+        if self.combo > 0 and now - self.last_hit_at > GAME_COMBO_WINDOW:
+            self.combo = 0
+        if now - self.round_started_at >= self.round_seconds:
+            self.state = "results"
+            self.state_started_at = now
+            self.targets.clear()
+            return
+
+        active_targets = []
+        for target in self.targets:
+            if now <= target.expires_at:
+                active_targets.append(target)
+            else:
+                self.misses += 1
+                self.combo = 0
+        self.targets = active_targets
+
+        desired = min(GAME_MAX_TARGETS, 1 + int(self.elapsed(now) // 15))
+        while len(self.targets) < desired:
+            self.targets.append(self._spawn_target(now, width, height))
+
+    def _spawn_target(self, now, width, height):
+        radius = max(26, min(GAME_TARGET_RADIUS, min(width, height) // 10))
+        margin_x = radius + max(20, width // 12)
+        top = radius + max(70, height // 10)
+        bottom = max(top + 1, height - radius - max(60, height // 8))
+        left = min(margin_x, max(radius, width - radius - 1))
+        right = max(left + 1, width - margin_x)
+        center = np.array([
+            self.rng.integers(left, right),
+            self.rng.integers(top, bottom),
+        ], dtype=np.float32)
+        target = GameTarget(
+            target_id=self._next_target_id,
+            center=center,
+            radius=radius,
+            color=BLADE_COLORS[(self._next_target_id - 1) % len(BLADE_COLORS)],
+            spawned_at=now,
+            expires_at=now + GAME_TARGET_LIFETIME,
+        )
+        self._next_target_id += 1
+        return target
+
+    def register_blade(self, start, end, speed, now):
+        if self.state != "playing" or speed < GAME_HIT_MIN_SPEED:
+            return None
+        for target in list(self.targets):
+            accuracy = segment_circle_hit(start, end, target.center, target.radius)
+            if accuracy is None:
+                continue
+            if now - self.last_hit_at <= GAME_COMBO_WINDOW:
+                self.combo += 1
+            else:
+                self.combo = 1
+            self.best_combo = max(self.best_combo, self.combo)
+            self.last_hit_at = now
+            self.hits += 1
+            speed_bonus = min(100, int(max(0.0, speed - SWING_THRESHOLD_NORM) * 5))
+            accuracy_bonus = int(accuracy * 100)
+            combo_multiplier = 1.0 + min(2.0, (self.combo - 1) * 0.1)
+            gained = int((100 + speed_bonus + accuracy_bonus) * combo_multiplier)
+            quality = "PERFECT" if accuracy >= 0.72 and speed >= 10.0 else "GOOD"
+            self.score += gained
+            self.targets.remove(target)
+            self.hit_flashes.append((target.center.copy(), now, gained, quality))
+            return target.center.copy(), gained
+        return None
+
+    def elapsed(self, now):
+        if self.round_started_at <= 0.0:
+            return 0.0
+        return max(0.0, now - self.round_started_at)
+
+    def remaining(self, now):
+        return max(0.0, self.round_seconds - self.elapsed(now))
 
 
 # -------- Hilt --------
@@ -451,6 +621,92 @@ def draw_sparks(frame, center, seed):
     cv2.circle(overlay, (cx, cy), 70, (200, 240, 255), -1, cv2.LINE_AA)
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
     cv2.circle(frame, (cx, cy), 24, (255, 255, 255), -1, cv2.LINE_AA)
+
+
+def _draw_centered_text(frame, text, y, scale, color, thickness=2):
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    (text_width, _), _ = cv2.getTextSize(text, font, scale, thickness)
+    x = max(10, (frame.shape[1] - text_width) // 2)
+    cv2.putText(frame, text, (x + 2, y + 2), font, scale,
+                (0, 0, 0), thickness + 3, cv2.LINE_AA)
+    cv2.putText(frame, text, (x, y), font, scale,
+                color, thickness, cv2.LINE_AA)
+
+
+def draw_arcade_targets(frame, game, now):
+    if game.state != "playing":
+        return
+    for target in game.targets:
+        center = to_pt(target.center)
+        remaining_ratio = max(0.0, min(
+            1.0,
+            (target.expires_at - now) / GAME_TARGET_LIFETIME,
+        ))
+        pulse = 1.0 + 0.08 * math.sin(now * 9.0 + target.target_id)
+        radius = max(4, int(target.radius * pulse))
+        overlay = frame.copy()
+        cv2.circle(overlay, center, radius + 16, target.color, -1, cv2.LINE_AA)
+        cv2.addWeighted(overlay, 0.18, frame, 0.82, 0, dst=frame)
+        cv2.circle(frame, center, radius, target.color, 5, cv2.LINE_AA)
+        cv2.circle(frame, center, max(5, radius // 3), (255, 255, 255), 3, cv2.LINE_AA)
+        cv2.ellipse(frame, center, (radius + 8, radius + 8), -90,
+                    0, int(360 * remaining_ratio),
+                    (255, 255, 255), 4, cv2.LINE_AA)
+
+
+def draw_arcade_ui(frame, game, now):
+    if not game.enabled:
+        cv2.putText(frame, "FREE PLAY  |  G: arcade mode", (14, 34),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (220, 220, 220), 2, cv2.LINE_AA)
+        return
+
+    if game.state == "playing":
+        cv2.putText(frame, f"SCORE {game.score:06d}", (14, 38),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
+        combo_color = (80, 255, 255) if game.combo >= 5 else (220, 220, 220)
+        cv2.putText(frame, f"COMBO x{game.combo}", (14, 73),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.72, combo_color, 2, cv2.LINE_AA)
+        remaining_text = f"TIME {game.remaining(now):04.1f}"
+        (text_width, _), _ = cv2.getTextSize(
+            remaining_text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
+        cv2.putText(frame, remaining_text, (frame.shape[1] - text_width - 14, 38),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
+    elif game.state == "ready":
+        _draw_centered_text(frame, "LIGHTSABER ARCADE", frame.shape[0] // 2 - 30,
+                            1.15, (80, 255, 255), 3)
+        _draw_centered_text(frame, "SPACE: start  |  G: free play",
+                            frame.shape[0] // 2 + 25, 0.7, (255, 255, 255), 2)
+    elif game.state == "countdown":
+        remaining = max(1, int(math.ceil(
+            GAME_COUNTDOWN_SECONDS - (now - game.state_started_at))))
+        _draw_centered_text(frame, str(remaining), frame.shape[0] // 2,
+                            2.8, (80, 255, 255), 5)
+    elif game.state == "results":
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, 0), (frame.shape[1], frame.shape[0]),
+                      (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.68, frame, 0.32, 0, dst=frame)
+        center_y = frame.shape[0] // 2
+        _draw_centered_text(frame, "ROUND COMPLETE", center_y - 100,
+                            1.2, (80, 255, 255), 3)
+        _draw_centered_text(frame, f"SCORE  {game.score}", center_y - 35,
+                            1.0, (255, 255, 255), 2)
+        _draw_centered_text(frame, f"HITS {game.hits}   MISSES {game.misses}",
+                            center_y + 10, 0.75, (230, 230, 230), 2)
+        _draw_centered_text(frame, f"BEST COMBO x{game.best_combo}",
+                            center_y + 50, 0.75, (230, 230, 230), 2)
+        _draw_centered_text(frame, "SPACE: play again  |  G: free play",
+                            center_y + 110, 0.62, (255, 255, 255), 2)
+
+    for center, hit_at, gained, quality in list(game.hit_flashes):
+        age = now - hit_at
+        if age > 0.7:
+            continue
+        alpha = 1.0 - age / 0.7
+        pos = to_pt(center + np.array([0.0, -45.0 * age], dtype=np.float32))
+        color = tuple(int(255 * alpha) for _ in range(3))
+        cv2.putText(frame, f"{quality} +{gained}", pos, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8, color, 2, cv2.LINE_AA)
 
 
 # -------- Audio synthesis (unchanged from v5) --------
@@ -768,6 +1024,12 @@ def parse_args(argv=None):
             raise argparse.ArgumentTypeError("value must be 0 or 1")
         return parsed
 
+    def positive_float(value):
+        parsed = float(value)
+        if parsed <= 0.0:
+            raise argparse.ArgumentTypeError("value must be > 0")
+        return parsed
+
     parser = argparse.ArgumentParser(
         description="Lightsaber MVP with MediaPipe hand tracking.")
     parser.add_argument(
@@ -800,6 +1062,21 @@ def parse_args(argv=None):
         type=model_complexity,
         default=MP_MODEL_COMPLEXITY,
         help="MediaPipe Hands model complexity, 0 or 1 (default: %(default)s).")
+    parser.add_argument(
+        "--game-mode",
+        choices=("arcade", "free"),
+        default="arcade",
+        help="Start in arcade or free-play mode (default: %(default)s).")
+    parser.add_argument(
+        "--round-seconds",
+        type=positive_float,
+        default=GAME_ROUND_SECONDS,
+        help="Arcade round duration in seconds (default: %(default)s).")
+    parser.add_argument(
+        "--game-seed",
+        type=int,
+        default=None,
+        help="Optional deterministic target seed for testing or demos.")
     return parser.parse_args(argv)
 
 
@@ -844,11 +1121,18 @@ def main():
     cv2.resizeWindow(win_name, *args.display_size)
 
     slots = [HandSlot(i) for i in range(args.max_hands)]
+    game = ArcadeGame(
+        enabled=args.game_mode == "arcade",
+        round_seconds=args.round_seconds,
+        seed=args.game_seed,
+    )
+    game.reset(time.time())
     last_t = time.time()
     fps_acc, fps_cnt, fps = 0.0, 0, 0.0
 
     print("[Lightsaber v6] hold fist 0.5s = ignite, open hand 0.3s = retract")
-    print("                F=fullscreen  M=mirror  D=debug  1/2=blade len  ESC/Q=quit")
+    print("                SPACE=start  G=game/free  R=reset  F=fullscreen")
+    print("                M=mirror  D=debug  1/2=blade len  ESC/Q=quit")
 
     while True:
         ok, frame = cap.read()
@@ -861,6 +1145,7 @@ def main():
         now = time.time()
         dt = max(1e-3, now - last_t)
         last_t = now
+        game.update(now, w, h)
 
         if args.process_scale != 1.0:
             small = cv2.resize(frame, None, fx=args.process_scale, fy=args.process_scale,
@@ -894,8 +1179,11 @@ def main():
             if slot.evt_retract:
                 audio.play_retract()
 
+        draw_arcade_targets(frame, game, now)
+
         # Render: use FILTERED positions (slot.wrist_f / mid_mcp_f / base_f)
         fully_ignited = []
+        target_hits = []
         peak_intensity = 0.0
         for slot in slots:
             if not slot.active or slot.wrist_f is None or slot.base_f <= 1e-3:
@@ -937,6 +1225,10 @@ def main():
                     draw_tip_flash(frame, end, slot.color, 1.0 - slot.blade_progress)
                 else:
                     fully_ignited.append((emitter, end, slot.idx))
+                    hit = game.register_blade(
+                        emitter, end, slot.tip_speed_smooth, now)
+                    if hit is not None:
+                        target_hits.append(hit[0])
 
         for a in range(len(fully_ignited)):
             for b in range(a + 1, len(fully_ignited)):
@@ -945,6 +1237,10 @@ def main():
                 if ip is not None:
                     draw_sparks(frame, ip, int(now * 1000) + a * 17 + b)
                     audio.play_clash(now)
+
+        for hit_center in target_hits:
+            draw_sparks(frame, to_pt(hit_center), int(now * 1000))
+            audio.play_clash(now)
 
         fps_acc += dt
         fps_cnt += 1
@@ -960,11 +1256,18 @@ def main():
                     (0, 0, 0), 4, cv2.LINE_AA)
         cv2.putText(frame, hud, (10, h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                     (220, 220, 220), 1, cv2.LINE_AA)
+        draw_arcade_ui(frame, game, now)
 
         cv2.imshow(win_name, frame)
         key = cv2.waitKey(1) & 0xFF
         if key in (27, ord('q'), ord('Q')):
             break
+        elif key == ord(' '):
+            game.start(now)
+        elif key in (ord('g'), ord('G')):
+            game.set_enabled(not game.enabled, now)
+        elif key in (ord('r'), ord('R')):
+            game.reset(now)
         elif key in (ord('m'), ord('M')):
             mirror = not mirror
         elif key in (ord('d'), ord('D')):

@@ -18,6 +18,9 @@ class CliArgsTest(unittest.TestCase):
         ))
         self.assertEqual(args.process_scale, lightsaber_mvp.MP_PROCESS_SCALE)
         self.assertEqual(args.model_complexity, lightsaber_mvp.MP_MODEL_COMPLEXITY)
+        self.assertEqual(args.game_mode, "arcade")
+        self.assertEqual(args.round_seconds, lightsaber_mvp.GAME_ROUND_SECONDS)
+        self.assertIsNone(args.game_seed)
 
     def test_custom_camera_and_no_mirror(self):
         args = lightsaber_mvp.parse_args([
@@ -27,6 +30,9 @@ class CliArgsTest(unittest.TestCase):
             "--display-size", "1280x720",
             "--process-scale", "0.75",
             "--model-complexity", "1",
+            "--game-mode", "free",
+            "--round-seconds", "90",
+            "--game-seed", "42",
         ])
 
         self.assertEqual(args.camera_index, 1)
@@ -35,6 +41,9 @@ class CliArgsTest(unittest.TestCase):
         self.assertEqual(args.display_size, (1280, 720))
         self.assertEqual(args.process_scale, 0.75)
         self.assertEqual(args.model_complexity, 1)
+        self.assertEqual(args.game_mode, "free")
+        self.assertEqual(args.round_seconds, 90.0)
+        self.assertEqual(args.game_seed, 42)
 
     def test_max_hands_must_be_positive(self):
         with contextlib.redirect_stderr(io.StringIO()):
@@ -65,6 +74,16 @@ class CliArgsTest(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 lightsaber_mvp.parse_args(["--model-complexity", "2"])
+
+    def test_round_seconds_must_be_positive(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                lightsaber_mvp.parse_args(["--round-seconds", "0"])
+
+    def test_game_mode_must_be_known(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                lightsaber_mvp.parse_args(["--game-mode", "story"])
 
 
 if __name__ == "__main__":
