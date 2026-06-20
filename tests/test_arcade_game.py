@@ -140,6 +140,57 @@ class ArcadeGameTest(unittest.TestCase):
             lightsaber_mvp.DIFFICULTY_PRESETS["hard"].target_lifetime,
         )
 
+    def spawn_laser(self, now=13.2):
+        self.game.next_laser_at = now
+        self.game.update(now, 1280, 720)
+        self.assertEqual(len(self.game.laser_bolts), 1)
+        return self.game.laser_bolts[0]
+
+    def test_laser_moves_toward_destination(self):
+        self.start_playing()
+        bolt = self.spawn_laser()
+        initial_distance = np.linalg.norm(bolt.destination - bolt.position)
+
+        self.game.update(13.7, 1280, 720)
+
+        moved_distance = np.linalg.norm(bolt.destination - bolt.position)
+        self.assertLess(moved_distance, initial_distance)
+
+    def test_blade_can_parry_laser(self):
+        self.start_playing()
+        bolt = self.spawn_laser()
+        start = bolt.position + np.array([-bolt.radius * 2, 0.0])
+        end = bolt.position + np.array([bolt.radius * 2, 0.0])
+
+        parry = self.game.register_laser_parry(
+            start, end, speed=15.0, now=13.21)
+
+        self.assertIsNotNone(parry)
+        self.assertEqual(self.game.parries, 1)
+        self.assertGreater(self.game.score, 0)
+        self.assertNotIn(bolt, self.game.laser_bolts)
+
+    def test_unblocked_laser_removes_life(self):
+        self.start_playing()
+        bolt = self.spawn_laser()
+
+        self.game.update(bolt.danger_at + 0.01, 1280, 720)
+
+        self.assertEqual(self.game.lives, lightsaber_mvp.GAME_STARTING_LIVES - 1)
+        self.assertEqual(self.game.misses, 1)
+        self.assertNotIn(bolt, self.game.laser_bolts)
+
+    def test_last_unblocked_laser_ends_round(self):
+        self.start_playing()
+        self.game.lives = 1
+        bolt = self.spawn_laser()
+
+        self.game.update(bolt.danger_at + 0.01, 1280, 720)
+
+        self.assertEqual(self.game.state, "results")
+        self.assertEqual(self.game.lives, 0)
+        self.assertEqual(self.game.result_reason, "game_over")
+
     def test_combo_expires_without_followup_hit(self):
         self.start_playing()
         self.game.combo = 3

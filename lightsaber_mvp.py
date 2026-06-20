@@ -109,6 +109,8 @@ GAME_COMBO_WINDOW = 2.2
 GAME_MAX_TARGETS = 3
 GAME_TARGET_RADIUS = 42
 GAME_HIT_MIN_SPEED = 3.0
+GAME_STARTING_LIVES = 3
+GAME_LASER_RADIUS = 16
 
 
 @dataclass(frozen=True)
@@ -120,12 +122,14 @@ class DifficultyPreset:
     min_hit_speed: float
     direction_threshold: float
     direction_count: int
+    laser_interval: float
+    laser_speed: float
 
 
 DIFFICULTY_PRESETS = {
-    "easy": DifficultyPreset("easy", 4.0, 3.0, 2, 2.0, 0.15, 4),
-    "normal": DifficultyPreset("normal", 2.8, 2.2, 3, 3.0, 0.45, 4),
-    "hard": DifficultyPreset("hard", 1.9, 1.5, 4, 5.0, 0.70, 8),
+    "easy": DifficultyPreset("easy", 4.0, 3.0, 2, 2.0, 0.15, 4, 5.5, 150.0),
+    "normal": DifficultyPreset("normal", 2.8, 2.2, 3, 3.0, 0.45, 4, 3.8, 210.0),
+    "hard": DifficultyPreset("hard", 1.9, 1.5, 4, 5.0, 0.70, 8, 2.4, 285.0),
 }
 
 SWING_DIRECTIONS = (
@@ -336,6 +340,19 @@ class GameTarget:
     last_wrong_at: float = -1e9
 
 
+@dataclass(eq=False)
+class LaserBolt:
+    bolt_id: int
+    origin: np.ndarray
+    destination: np.ndarray
+    velocity: np.ndarray
+    position: np.ndarray
+    radius: int
+    color: tuple
+    spawned_at: float
+    danger_at: float
+
+
 class ArcadeGame:
     """Camera-independent arcade round state and scoring logic."""
 
@@ -347,16 +364,23 @@ class ArcadeGame:
         self.rng = np.random.default_rng(seed)
         self.state = "ready" if enabled else "free"
         self.state_started_at = 0.0
+        self.result_reason = ""
         self.round_started_at = 0.0
+        self.result_reason = ""
         self.score = 0
         self.combo = 0
         self.best_combo = 0
         self.hits = 0
         self.misses = 0
+        self.parries = 0
+        self.lives = GAME_STARTING_LIVES
         self.last_hit_at = -1e9
         self.targets = []
+        self.laser_bolts = []
         self.hit_flashes = deque(maxlen=12)
         self._next_target_id = 1
+        self._next_bolt_id = 1
+        self.next_laser_at = 1e9
 
     def set_enabled(self, enabled, now):
         self.enabled = enabled
@@ -371,9 +395,13 @@ class ArcadeGame:
         self.best_combo = 0
         self.hits = 0
         self.misses = 0
+        self.parries = 0
+        self.lives = GAME_STARTING_LIVES
         self.last_hit_at = -1e9
         self.targets.clear()
+        self.laser_bolts.clear()
         self.hit_flashes.clear()
+        self.next_laser_at = 1e9
 
     def start(self, now):
         if not self.enabled or self.state not in ("ready", "results"):
@@ -391,6 +419,7 @@ class ArcadeGame:
                 self.state = "playing"
                 self.round_started_at = now
                 self.state_started_at = now
+                self.next_laser_at = now + self.difficulty.laser_interval
         if self.state != "playing":
             return
         if self.combo > 0 and now - self.last_hit_at > self.difficulty.combo_window:
@@ -398,8 +427,35 @@ class ArcadeGame:
         if now - self.round_started_at >= self.round_seconds:
             self.state = "results"
             self.state_started_at = now
+            self.result_reason = "complete"
             self.targets.clear()
+            self.laser_bolts.clear()
             return
+
+        active_bolts = []
+        for bolt in self.laser_bolts:
+            if now >= bolt.danger_at:
+                self.misses += 1
+                self.lives -= 1
+                self.combo = 0
+                self.hit_flashes.append(
+                    (bolt.destination.copy(), now, 0, "SHIELD HIT"))
+            else:
+                bolt.position = bolt.origin + bolt.velocity * (now - bolt.spawned_at)
+                active_bolts.append(bolt)
+        self.laser_bolts = active_bolts
+        if self.lives <= 0:
+            self.state = "results"
+            self.state_started_at = now
+            self.result_reason = "game_over"
+            self.targets.clear()
+            self.laser_bolts.clear()
+            return
+
+        if now >= self.next_laser_at:
+            self.laser_bolts.append(self._spawn_laser(now, width, height))
+            jitter = float(self.rng.uniform(0.85, 1.15))
+            self.next_laser_at = now + self.difficulty.laser_interval * jitter
 
         active_targets = []
         for target in self.targets:
@@ -448,6 +504,38 @@ class ArcadeGame:
         self._next_target_id += 1
         return target
 
+    def _spawn_laser(self, now, width, height):
+        edge = int(self.rng.integers(0, 4))
+        if edge == 0:
+            origin = np.array([0.0, self.rng.uniform(80, height - 80)], dtype=np.float32)
+        elif edge == 1:
+            origin = np.array([width - 1.0, self.rng.uniform(80, height - 80)], dtype=np.float32)
+        elif edge == 2:
+            origin = np.array([self.rng.uniform(80, width - 80), 0.0], dtype=np.float32)
+        else:
+            origin = np.array([self.rng.uniform(80, width - 80), height - 1.0], dtype=np.float32)
+        destination = np.array([
+            width * 0.5 + self.rng.uniform(-width * 0.10, width * 0.10),
+            height * 0.55 + self.rng.uniform(-height * 0.10, height * 0.10),
+        ], dtype=np.float32)
+        travel = destination - origin
+        distance = max(1.0, float(np.linalg.norm(travel)))
+        velocity = travel / distance * self.difficulty.laser_speed
+        duration = distance / self.difficulty.laser_speed
+        bolt = LaserBolt(
+            bolt_id=self._next_bolt_id,
+            origin=origin,
+            destination=destination,
+            velocity=velocity,
+            position=origin.copy(),
+            radius=GAME_LASER_RADIUS,
+            color=(60, 60, 255),
+            spawned_at=now,
+            danger_at=now + duration,
+        )
+        self._next_bolt_id += 1
+        return bolt
+
     def register_blade(self, start, end, speed, now, swing_vector):
         if self.state != "playing" or speed < self.difficulty.min_hit_speed:
             return None
@@ -488,6 +576,23 @@ class ArcadeGame:
             self.targets.remove(target)
             self.hit_flashes.append((target.center.copy(), now, gained, quality))
             return target.center.copy(), gained
+        return None
+
+    def register_laser_parry(self, start, end, speed, now):
+        if self.state != "playing" or speed < self.difficulty.min_hit_speed:
+            return None
+        for bolt in list(self.laser_bolts):
+            accuracy = segment_circle_hit(
+                start, end, bolt.position, bolt.radius + BLADE_CORE_WIDTH)
+            if accuracy is None:
+                continue
+            gained = 150 + int(accuracy * 100)
+            self.score += gained
+            self.parries += 1
+            self.laser_bolts.remove(bolt)
+            self.hit_flashes.append(
+                (bolt.position.copy(), now, gained, "PARRY"))
+            return bolt.position.copy(), gained
         return None
 
     def elapsed(self, now):
@@ -722,6 +827,24 @@ def draw_arcade_targets(frame, game, now):
                         4, cv2.LINE_AA, tipLength=0.32)
 
 
+def draw_laser_bolts(frame, game, now):
+    if game.state != "playing":
+        return
+    for bolt in game.laser_bolts:
+        speed = max(1.0, float(np.linalg.norm(bolt.velocity)))
+        direction = bolt.velocity / speed
+        trail_end = bolt.position - direction * 70.0
+        _glow_line(frame, to_pt(trail_end), to_pt(bolt.position),
+                   bolt.color, 28, 0.42)
+        cv2.line(frame, to_pt(trail_end), to_pt(bolt.position),
+                 (255, 210, 210), 5, cv2.LINE_AA)
+        pulse = 1.0 + 0.25 * math.sin(now * 18.0 + bolt.bolt_id)
+        cv2.circle(frame, to_pt(bolt.position), int(bolt.radius * pulse),
+                   bolt.color, -1, cv2.LINE_AA)
+        cv2.circle(frame, to_pt(bolt.position), max(3, bolt.radius // 3),
+                   (255, 255, 255), -1, cv2.LINE_AA)
+
+
 def draw_arcade_ui(frame, game, now):
     if not game.enabled:
         cv2.putText(frame, "FREE PLAY  |  G: arcade mode", (14, 34),
@@ -736,6 +859,9 @@ def draw_arcade_ui(frame, game, now):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.72, combo_color, 2, cv2.LINE_AA)
         cv2.putText(frame, game.difficulty.name.upper(), (14, 103),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (170, 170, 170), 1, cv2.LINE_AA)
+        lives_color = (80, 255, 80) if game.lives > 1 else (60, 60, 255)
+        cv2.putText(frame, f"SHIELD {game.lives}", (14, 132),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, lives_color, 2, cv2.LINE_AA)
         remaining_text = f"TIME {game.remaining(now):04.1f}"
         (text_width, _), _ = cv2.getTextSize(
             remaining_text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
@@ -757,13 +883,16 @@ def draw_arcade_ui(frame, game, now):
                       (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.68, frame, 0.32, 0, dst=frame)
         center_y = frame.shape[0] // 2
-        _draw_centered_text(frame, "ROUND COMPLETE", center_y - 100,
-                            1.2, (80, 255, 255), 3)
+        game_over = game.result_reason == "game_over"
+        result_title = "GAME OVER" if game_over else "ROUND COMPLETE"
+        result_color = (60, 90, 255) if game_over else (80, 255, 255)
+        _draw_centered_text(frame, result_title, center_y - 100,
+                            1.2, result_color, 3)
         _draw_centered_text(frame, f"SCORE  {game.score}", center_y - 35,
                             1.0, (255, 255, 255), 2)
         _draw_centered_text(frame, f"HITS {game.hits}   MISSES {game.misses}",
                             center_y + 10, 0.75, (230, 230, 230), 2)
-        _draw_centered_text(frame, f"BEST COMBO x{game.best_combo}",
+        _draw_centered_text(frame, f"PARRIES {game.parries}   BEST COMBO x{game.best_combo}",
                             center_y + 50, 0.75, (230, 230, 230), 2)
         _draw_centered_text(frame, "SPACE: play again  |  G: free play",
                             center_y + 110, 0.62, (255, 255, 255), 2)
@@ -1264,10 +1393,11 @@ def main():
                 audio.play_retract()
 
         draw_arcade_targets(frame, game, now)
+        draw_laser_bolts(frame, game, now)
 
         # Render: use FILTERED positions (slot.wrist_f / mid_mcp_f / base_f)
         fully_ignited = []
-        target_hits = []
+        impact_hits = []
         peak_intensity = 0.0
         for slot in slots:
             if not slot.active or slot.wrist_f is None or slot.base_f <= 1e-3:
@@ -1313,7 +1443,11 @@ def main():
                         emitter, end, slot.tip_speed_smooth, now,
                         slot.tip_velocity_smooth)
                     if hit is not None:
-                        target_hits.append(hit[0])
+                        impact_hits.append(hit[0])
+                    parry = game.register_laser_parry(
+                        emitter, end, slot.tip_speed_smooth, now)
+                    if parry is not None:
+                        impact_hits.append(parry[0])
 
         for a in range(len(fully_ignited)):
             for b in range(a + 1, len(fully_ignited)):
@@ -1323,7 +1457,7 @@ def main():
                     draw_sparks(frame, ip, int(now * 1000) + a * 17 + b)
                     audio.play_clash(now)
 
-        for hit_center in target_hits:
+        for hit_center in impact_hits:
             draw_sparks(frame, to_pt(hit_center), int(now * 1000))
             audio.play_clash(now)
 

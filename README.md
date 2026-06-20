@@ -11,6 +11,7 @@
 - 可透過 CLI 調整 camera、手部數量、視窗尺寸與 MediaPipe 效能參數。
 - Arcade mode 提供 3 秒倒數、方向目標、揮劍速度門檻、命中評價、Combo 與回合結算。
 - `easy / normal / hard` difficulty 會調整目標時限、同時目標數、Combo window、揮劍速度與方向容許角度。
+- 敵方雷射會從畫面邊緣射向玩家；以光劍格擋可獲得 Parry 分數，漏接則扣除 Shield。
 
 ## 執行環境
 
@@ -69,6 +70,7 @@ python lightsaber_mvp.py --help
 | 握拳 0.5 秒 | 啟動光劍 |
 | 張手 0.3 秒 | 收回光劍 |
 | 朝目標箭頭方向揮劍 | Arcade mode 正確斬擊；反方向不計分 |
+| 以光劍攔截紅色雷射 | Parry 並獲得額外分數 |
 | `F` | 切換 fullscreen |
 | `M` | 切換鏡像 |
 | `D` | 顯示或隱藏 hand landmarks |
@@ -85,7 +87,7 @@ python -m unittest discover -s tests -v
 python -m py_compile lightsaber_mvp.py tests/test_cli_args.py
 ```
 
-目前 automated tests 涵蓋 CLI 驗證、遊戲狀態轉換、目標生命週期、線段命中、揮劍速度與方向門檻、difficulty、計分與 Combo。Camera、手勢辨識、畫面與音效仍需以 webcam 進行手動 smoke test。
+目前 automated tests 涵蓋 CLI 驗證、遊戲狀態轉換、目標生命週期、線段命中、揮劍速度與方向門檻、difficulty、計分、Combo、雷射移動、Parry 與 Shield damage。Camera、手勢辨識、畫面與音效仍需以 webcam 進行手動 smoke test。
 
 ## 專案結構
 
@@ -109,6 +111,7 @@ Webcam frame
   -> gesture classification
   -> hand-slot assignment and smoothing
   -> lightsaber state transition
+  -> target / laser gameplay and scoring
   -> visual effects and synthesized audio
   -> OpenCV display
 ```
@@ -117,6 +120,7 @@ Webcam frame
 
 - 手勢判定目前以幾何規則為主，會受遮擋、光線與手掌角度影響。
 - 光劍碰撞採 2D 線段交點判定，不代表真實 3D 空間碰撞。
+- 雷射目前以 2D 等速路徑移動，尚未加入敵人模型與預警動畫。
 - 主要程式集中在單一 Python 檔案，後續擴充與 isolated testing 成本較高。
 - 尚未建立 camera-independent 的錄影回放測試與效能 benchmark。
 
